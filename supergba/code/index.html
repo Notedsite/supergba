@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>GBA Emulator Bootstrap - GitHub Pages</title>
+    <title>SuperGBA Emulator</title>
     <style>
     body { font-family: sans-serif; max-width: 800px; margin: 40px auto; line-height: 1.6; }
     #console-output { border: 1px solid #ccc; padding: 15px; background: #f9f9f9; min-height: 150px; white-space: pre-wrap; margin-top: 10px; }
@@ -29,9 +29,9 @@
 </head>
 <body>
 
-    <h1>GBA Emulator Bootstrap</h1>
+    <h1>SuperGBA Emulator Bootstrap</h1>
     <p>This is a client-side emulator architecture. Please load a ROM to begin emulation.</p>
-    <p><italic>Limited support for .zip was implemented. It is still HEAVILY suggested you use .gba</italic></p>
+    <p><italic>10/13/2025: Removed support for .zips, as they would bug too much.</italic></p>
     <div id="rom-loader-area">
         <label for="rom-file">Select a ROM (.gba):</label>
         <input type="file" id="rom-file" accept=".gba" onchange="window.loadRomFromFile(this.files)">
@@ -50,6 +50,7 @@
     <script src="emulator-bootstrap.js"></script>
 
     <script>
+        // Console logging interceptor remains the same
         const originalLog = console.log;
         const outputElement = document.getElementById('console-output');
         
@@ -71,5 +72,7 @@
         };
     </script>
 
+</body>
+</html>
 </body>
 </html>
