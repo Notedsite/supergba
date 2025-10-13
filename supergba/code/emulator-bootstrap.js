@@ -1,25 +1,20 @@
 /**
  * EMULATOR BOOTSTRAP for GitHub Pages (Control Flow)
- * This script handles browser compatibility, storage setup, and initiates the 
- * emulator ONLY after the user has successfully uploaded a ROM file.
+ * This script handles file loading and initiates the emulator.
  */
 
-// Global configuration 
 const CONFIG = {
-    SAVE_PATH: 'gbajs_saves/',    // Key for local storage or IndexedDB
-    EMULATOR_ID: 'gbajs-container', // ID of the HTML element to host the emulator
-    STATUS_ID: 'emulator-status'    // ID for the dedicated status message element
+    EMULATOR_ID: 'gbajs-container',
+    STATUS_ID: 'emulator-status'
 };
 
-// Global variable to hold the emulator instance
 window.gbaEmulatorInstance = null; 
+window.gbaBiosData = null; // Global variable to hold the BIOS data
 
 // --- Core Bootstrap Functions (Run on Page Load) ---
 
-/** Checks for basic browser requirements (modern features). */
 function checkCompatibility() {
     console.log('[Bootstrap] Checking browser compatibility...');
-    
     const requiredFeatures = ['indexedDB', 'localStorage', 'WebAssembly'];
     let compatible = true;
 
@@ -29,44 +24,68 @@ function checkCompatibility() {
             compatible = false;
         }
     }
-
     if (!compatible) {
         const message = 'ERROR: Your browser is too old or lacks necessary features for emulation.';
-        const container = document.getElementById(CONFIG.EMULATOR_ID);
-        if (container) {
-            container.innerHTML = `<p class="error">${message}</p>`;
-        }
+        document.getElementById(CONFIG.EMULATOR_ID).innerHTML = `<p class="error">${message}</p>`;
         return false;
     }
-    
     console.log('[Bootstrap] Browser check passed.', 'success');
     return true;
 }
 
-/** Simulates creation of default "directories" (i.e., local storage keys for saves). */
 function createDefaultStorage() {
-    console.log('[Bootstrap] Simulating default storage creation...');
-    
+    // Basic local storage check (can be expanded later)
     try {
-        if (!localStorage.getItem('bootstrapped')) {
-            localStorage.setItem('bootstrapped', new Date().toISOString());
-            console.log(`[Bootstrap] Initializing storage path: ${CONFIG.SAVE_PATH}`, 'success');
-        } else {
-            console.log(`[Bootstrap] Storage path already exists: ${CONFIG.SAVE_PATH}`);
-        }
+        localStorage.setItem('bootstrapped', new Date().toISOString());
+        localStorage.removeItem('bootstrapped');
+        console.log('[Bootstrap] Local storage access verified.', 'success');
         return true;
     } catch (e) {
-        console.error('[Bootstrap] Failed to access local storage. Check browser settings.');
+        console.error('[Bootstrap] Failed to access local storage. Saves will not work.');
         return false;
     }
 }
 
-// --- ROM Loading Functionality (Triggered by User Input) ---
+// --- BIOS Loading ---
 
-/**
- * Reads a ROM file selected by the user and passes it to the emulator core.
- * @param {FileList} files - The FileList object from the <input type="file"> event.
- */
+window.loadBiosFromFile = function(files) {
+    if (files.length === 0) return;
+
+    const file = files[0];
+    const fileName = file.name;
+    const fileExtension = fileName.slice(((fileName.lastIndexOf(".") - 1) >>> 0) + 2).toLowerCase();
+    
+    if (fileExtension !== 'bin') {
+        console.error(`[BIOS Loader] Invalid file type: ${fileExtension}. Please select a .bin file.`, 'error');
+        alert('Invalid file type. Please select a .bin file.');
+        return;
+    }
+
+    const reader = new FileReader();
+
+    reader.onload = function(event) {
+        const biosData = new Uint8Array(event.target.result);
+        
+        // CRITICAL CHECK: BIOS must be 16KB (0x4000 bytes)
+        if (biosData.byteLength !== 0x4000) {
+            console.error(`[BIOS Loader] Incorrect BIOS size: ${biosData.byteLength} bytes. Expected 16KB (0x4000).`, 'error');
+            alert('Incorrect BIOS size. Please use a standard 16KB GBA BIOS.');
+            return;
+        }
+
+        window.gbaBiosData = event.target.result; // Store ArrayBuffer
+        console.log('[BIOS Loader] BIOS successfully loaded.', 'success');
+    };
+
+    reader.onerror = function(event) {
+        console.error(`[BIOS Loader] Error reading file: ${event.target.error.name}`, 'error');
+    };
+
+    reader.readAsArrayBuffer(file);
+}
+
+// --- ROM Loading ---
+
 window.loadRomFromFile = function(files) {
     if (files.length === 0) {
         console.log('[ROM Loader] No file selected.');
@@ -77,7 +96,6 @@ window.loadRomFromFile = function(files) {
     const fileName = file.name;
     const fileExtension = fileName.slice(((fileName.lastIndexOf(".") - 1) >>> 0) + 2).toLowerCase();
     
-    // VALIDATION CORRECTED: Only accepting .gba
     if (fileExtension !== 'gba') {
         console.error(`[ROM Loader] Invalid file type: ${fileExtension}. Please select a .gba file.`, 'error');
         alert('Invalid file type. Please select a .gba file.');
@@ -86,45 +104,37 @@ window.loadRomFromFile = function(files) {
 
     console.log(`[ROM Loader] Selected file: ${fileName} (${file.size} bytes)`);
 
-    // Use FileReader to read the file contents as an ArrayBuffer
     const reader = new FileReader();
 
     reader.onload = function(event) {
-        const romData = event.target.result; // ArrayBuffer containing the ROM
-        console.log('[ROM Loader] File successfully read into memory.');
-        
-        loadRomDataIntoEmulator(romData, fileName);
+        loadRomDataIntoEmulator(event.target.result, fileName);
     };
 
     reader.onerror = function(event) {
         console.error(`[ROM Loader] Error reading file: ${event.target.error.name}`, 'error');
     };
 
-    // Start reading the file
     reader.readAsArrayBuffer(file);
 }
 
 
-/**
- * Creates the emulator instance (if it doesn't exist) and loads the ROM data.
- * @param {ArrayBuffer} romData - The binary data of the ROM.
- * @param {string} fileName - The name of the ROM file.
- */
 function loadRomDataIntoEmulator(romData, fileName) {
     console.log(`[Emulator Core] Preparing to load ROM data for ${fileName}...`);
     
-    const container = document.getElementById(CONFIG.EMULATOR_ID);
-    
-    let statusEl = document.getElementById(CONFIG.STATUS_ID);
-    if (!statusEl) {
-        console.error('[Emulator Core] Missing required status element.');
+    // NEW CHECK: Must have BIOS loaded before starting emulator
+    if (!window.gbaBiosData) {
+        console.error('[Emulator Core] BIOS not loaded. Please load the gba_bios.bin first.', 'error');
+        alert('Please load the GBA BIOS file (.bin) first.');
         return;
     }
 
-    // 1. CREATE THE EMULATOR INSTANCE (Only once, upon first ROM load)
+    const container = document.getElementById(CONFIG.EMULATOR_ID);
+    let statusEl = document.getElementById(CONFIG.STATUS_ID);
+    
+    // 1. CREATE THE EMULATOR INSTANCE (Pass BIOS data to it)
     if (!window.gbaEmulatorInstance) {
-        window.gbaEmulatorInstance = new GBAJS3_Core(container); 
-        console.log('[Emulator Core] New emulator instance created.');
+        window.gbaEmulatorInstance = new GBAJS3_Core(container, window.gbaBiosData); 
+        console.log('[Emulator Core] New emulator instance created with BIOS data.');
     }
     
     // 2. LOAD THE ROM AND START EXECUTION
@@ -159,12 +169,11 @@ function startBootstrap() {
     }
     
     statusEl.className = '';
-    statusEl.innerHTML = '<h2>Emulator Ready</h2><p>Please use the **"Select a ROM"** button to start a game.</p>';
+    statusEl.innerHTML = '<h2>Emulator Ready</h2><p>Please use the file inputs to load the **BIOS (.bin)** and then the **ROM (.gba)**.</p>';
     
     container.innerHTML = ''; 
     
-    console.log('[Bootstrap] Bootstrap process complete. Waiting for ROM file...', 'success');
+    console.log('[Bootstrap] Bootstrap process complete. Waiting for files...', 'success');
 }
 
-// Start the whole process once the page structure is loaded
 window.onload = startBootstrap;
