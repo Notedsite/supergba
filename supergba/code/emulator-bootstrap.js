@@ -6,8 +6,9 @@
 
 // Global configuration 
 const CONFIG = {
-    SAVE_PATH: 'gbajs_saves/',    // Key for local storage or IndexedDB
-    EMULATOR_ID: 'gbajs-container' // ID of the HTML element to host the emulator
+    SAVE_PATH: 'gbajs_saves/',      // Key for local storage or IndexedDB
+    EMULATOR_ID: 'gbajs-container', // ID of the HTML element to host the emulator
+    STATUS_ID: 'emulator-status'    // ID for the dedicated status message element
 };
 
 // Global variable to hold the emulator instance
@@ -31,7 +32,11 @@ function checkCompatibility() {
 
     if (!compatible) {
         const message = 'ERROR: Your browser is too old or lacks necessary features for emulation.';
-        document.getElementById(CONFIG.EMULATOR_ID).innerHTML = `<p class="error">${message}</p>`;
+        const container = document.getElementById(CONFIG.EMULATOR_ID);
+        // Display error in the main container before the status element is set up
+        if (container) {
+            container.innerHTML = `<p class="error">${message}</p>`;
+        }
         return false;
     }
     
@@ -110,30 +115,33 @@ function loadRomDataIntoEmulator(romData, fileName) {
     
     const container = document.getElementById(CONFIG.EMULATOR_ID);
     
-    // 1. CREATE THE EMULATOR INSTANCE (Only once, upon first ROM load)
-    if (!window.gbaEmulatorInstance) {
-         // This call creates the canvas and appends it to the container
-         window.gbaEmulatorInstance = new GBAJS3_Core(container); 
-         console.log('[Emulator Core] New emulator instance created.');
-    } else {
-        // If reloading, ensure the canvas is visible in the container
-        if (window.gbaEmulatorInstance.screen) {
-            container.innerHTML = '';
-            container.appendChild(window.gbaEmulatorInstance.screen);
-        }
+    // Get the status element for feedback
+    let statusEl = document.getElementById(CONFIG.STATUS_ID);
+    if (!statusEl) {
+        console.error('[Emulator Core] Missing required status element.');
+        return;
     }
 
-    // 2. LOAD THE ROM AND START EXECUTION
+    // 1. CREATE THE EMULATOR INSTANCE (Only once, upon first ROM load)
+    if (!window.gbaEmulatorInstance) {
+        // This call creates the canvas and appends it to the container
+        window.gbaEmulatorInstance = new GBAJS3_Core(container); 
+        console.log('[Emulator Core] New emulator instance created.');
+    }
     
+    // 2. LOAD THE ROM AND START EXECUTION
     if (window.gbaEmulatorInstance && typeof window.gbaEmulatorInstance.loadRom === 'function') {
         try {
             window.gbaEmulatorInstance.loadRom(romData); 
             
-            // Success message displayed outside the canvas
-            container.innerHTML += `<div class="success">Successfully loaded and started: ${fileName}</div>`;
+            // Update the dedicated status message element
+            statusEl.className = 'success';
+            statusEl.innerHTML = `Successfully loaded and started: <strong>${fileName}</strong>`;
         } catch (e) {
             console.error(`[Emulator Core] Error during ROM loading or starting: ${e.message}`, 'error');
-            container.innerHTML += `<p class="error">Error: Could not start game. Check console for details.</p>`;
+            // Update status message on error
+            statusEl.className = 'error';
+            statusEl.innerHTML = `Error: Could not start game. Check console for details.`;
         }
     } 
 }
@@ -145,8 +153,23 @@ function startBootstrap() {
     if (!checkCompatibility()) return;
     if (!createDefaultStorage()) return;
     
+    const container = document.getElementById(CONFIG.EMULATOR_ID);
+    
+    // Create or update status element that lives below the canvas container
+    let statusEl = document.getElementById(CONFIG.STATUS_ID);
+    if (!statusEl) {
+        statusEl = document.createElement('div');
+        statusEl.id = CONFIG.STATUS_ID;
+        // Insert the status element immediately after the emulator container
+        container.insertAdjacentElement('afterend', statusEl);
+    }
+    
     // Update UI to show we're ready for input
-    document.getElementById(CONFIG.EMULATOR_ID).innerHTML = '<h2>Emulator Ready</h2><p>Please use the **"Select a ROM"** button to start a game.</p>';
+    statusEl.className = '';
+    statusEl.innerHTML = '<h2>Emulator Ready</h2><p>Please use the **"Select a ROM"** button to start a game.</p>';
+    
+    // Clear the main container so the canvas can be placed without conflict upon first load
+    container.innerHTML = ''; 
     
     console.log('[Bootstrap] Bootstrap process complete. Waiting for ROM file...', 'success');
 }
