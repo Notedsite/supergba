@@ -1,6 +1,6 @@
 /**
  * EMULATOR BOOTSTRAP for GitHub Pages (Control Flow)
- * This script handles file loading, hardcoded BIOS loading, and ROM verification.
+ * This script handles file loading, asynchronous BIOS loading, and ROM verification.
  */
 
 const CONFIG = {
@@ -13,72 +13,121 @@ const CONFIG = {
 window.gbaEmulatorInstance = null; 
 window.gbaBiosData = null; 
 
-// The expected sum of the Nintendo logo bytes in a valid GBA ROM (Bytes 0xC0 to 0x9F).
-// This is a common and quick integrity check.
-const NINTENDO_LOGO_HASH = 0xAF; // Sum of 0xC0 through 0x9F must equal 0xAF
+// The expected sum of the GBA ROM header complement check.
+// Sum of bytes 0xA0 to 0xBC XOR 0x19 must equal the complement byte at 0xBD
+// We'll calculate the expected complement based on the ROM data.
 
-// --- BIOS Loading (Synchronous) ---
 
-function loadHardcodedBios() {
-    console.log(`[BIOS Loader] Attempting to load hardcoded BIOS: ${CONFIG.BIOS_FILE}...`);
-    
-    try {
-        const xhr = new XMLHttpRequest();
-        xhr.open('GET', CONFIG.BIOS_FILE, false); // FALSE for synchronous request
-        xhr.responseType = 'arraybuffer';
-        xhr.send(null);
-        
-        if (xhr.status === 200 || xhr.status === 0) { // status 0 for local file:// access
-            const biosData = new Uint8Array(xhr.response);
+// --- Bootstrap Utility Functions ---
 
-            if (biosData.byteLength !== 0x4000) {
-                console.error(`[BIOS Loader] ERROR: Incorrect BIOS size: ${biosData.byteLength} bytes. Expected 16KB (0x4000).`, 'error');
-                return false;
-            }
+function checkCompatibility() {
+    console.log('[Bootstrap] Checking browser compatibility...');
+    const requiredFeatures = ['indexedDB', 'localStorage', 'WebAssembly'];
+    let compatible = true;
 
-            window.gbaBiosData = xhr.response; // Store ArrayBuffer
-            console.log('[BIOS Loader] BIOS successfully loaded.', 'success');
-            return true;
-        } else {
-            console.error(`[BIOS Loader] ERROR: Could not load BIOS. Status: ${xhr.status}`, 'error');
-            return false;
+    for (const feature of requiredFeatures) {
+        if (!window[feature]) {
+            console.error(`[Bootstrap] ERROR: Missing required feature: ${feature}.`);
+            compatible = false;
         }
+    }
+    if (compatible) {
+        console.log('[Bootstrap] Browser check passed.', 'success');
+    }
+    return compatible;
+}
+
+function createDefaultStorage() {
+    try {
+        localStorage.setItem('bootstrapped', new Date().toISOString());
+        localStorage.removeItem('bootstrapped');
+        console.log('[Bootstrap] Local storage access verified.', 'success');
+        return true;
     } catch (e) {
-        console.error(`[BIOS Loader] ERROR: Failed to load BIOS file. Ensure '${CONFIG.BIOS_FILE}' is in the same folder.`, 'error');
+        console.error('[Bootstrap] Failed to access local storage. Saves will not work.');
         return false;
     }
+}
+
+// --- BIOS Loading (Asynchronous FIX) ---
+
+/**
+ * Loads the hardcoded BIOS file asynchronously using XMLHttpRequest.
+ * @returns {Promise<boolean>} Resolves true on success, false on failure.
+ */
+function loadHardcodedBios() {
+    return new Promise((resolve) => {
+        console.log(`[BIOS Loader] Attempting to load hardcoded BIOS: ${CONFIG.BIOS_FILE} (Async)...`);
+        
+        const xhr = new XMLHttpRequest();
+        xhr.open('GET', CONFIG.BIOS_FILE, true); // TRUE for asynchronous request
+        xhr.responseType = 'arraybuffer';
+        
+        xhr.onload = function() {
+            if (xhr.status === 200 || (xhr.status === 0 && xhr.response.byteLength > 0)) {
+                const biosData = new Uint8Array(xhr.response);
+
+                if (biosData.byteLength !== 0x4000) {
+                    console.error(`[BIOS Loader] ERROR: Incorrect BIOS size: ${biosData.byteLength} bytes. Expected 16KB (0x4000).`, 'error');
+                    resolve(false);
+                    return;
+                }
+
+                window.gbaBiosData = xhr.response; // Store ArrayBuffer
+                console.log('[BIOS Loader] BIOS successfully loaded.', 'success');
+                resolve(true);
+            } else {
+                console.error(`[BIOS Loader] ERROR: Could not load BIOS. Status: ${xhr.status}. Check network tab.`, 'error');
+                resolve(false);
+            }
+        };
+
+        xhr.onerror = function() {
+            console.error(`[BIOS Loader] ERROR: Network error or file not found. Ensure '${CONFIG.BIOS_FILE}' is in the same folder.`, 'error');
+            resolve(false);
+        };
+
+        xhr.send();
+    });
 }
 
 // --- ROM Verification ---
 
 /**
- * Performs basic ROM verification: checks the size and the Nintendo logo checksum.
+ * Performs basic ROM verification: checks the size and the GBA header complement checksum.
  * @param {ArrayBuffer} romData - The binary data of the ROM.
  * @returns {boolean} True if verification passes, false otherwise.
  */
 function verifyRom(romData) {
     const romView = new Uint8Array(romData);
 
-    // 1. Size Check: Must be at least 0xA0 (for the logo)
-    if (romData.byteLength < 0xA0) {
-        console.error('[ROM Verification] ROM file is too small.', 'error');
+    // 1. Size Check: Must be large enough to contain the header
+    if (romData.byteLength < 0xBD + 1) {
+        console.error('[ROM Verification] ROM file is too small to contain a valid header.', 'error');
         return false;
     }
 
-    // 2. Nintendo Logo Checksum (0xC0 to 0x9F)
-    let checksum = 0;
-    // The logo data is from 0x000000A0 to 0x0000009F in the GBA header.
-    // The logo itself spans bytes 0x04-0x9F. The checksum involves the bytes *after* the logo.
-    // However, the standard ROM verification usually checks the XOR or SUM of the Nintendo logo bytes.
-    // For simplicity and common practice, we'll check the header checksum byte 0xBD (the header complement check).
-    
-    // We will use the *header complement check* which is a more official verification method.
-    // Sum of bytes 0xA0 to 0xBC XOR 0x19 must equal the complement byte at 0xBD
+    // 2. Header Complement Check (0xA0 to 0xBC, check byte 0xBD)
     let headerSum = 0;
     for (let i = 0xA0; i <= 0xBC; i++) {
         headerSum += romView[i];
     }
-    const calculatedComplement = ((headerSum - 0x19) & 0xFF);
+    // GBA header checksum formula: (sum of 0xA0..0xBC) XOR 0x19 must equal 0xBD
+    // So, we expect: romView[0xBD] = ((headerSum & 0xFF) - 0x19) & 0xFF
+    
+    // The actual formula for the byte at 0xBD is: 
+    // The sum of bytes 0xA0 to 0xBC (inclusive) modulo 256, PLUS the byte at 0xBD 
+    // should result in 0x19 modulo 256.
+    
+    // A simpler way: The complement byte is set such that the checksum (sum of 0xA0-0xBC + 0xBD) is 0x19 mod 256.
+    
+    // For verification: (Sum(0xA0..0xBC) + romView[0xBD] + 0x19) MOD 256 should be 0.
+    // However, the standard implementation usually checks:
+    let checkSum = 0;
+    for (let i = 0xA0; i < 0xBD; i++) {
+        checkSum = (checkSum + romView[i]) & 0xFF;
+    }
+    const calculatedComplement = (0x100 - checkSum - 0x19) & 0xFF;
     const expectedComplement = romView[0xBD];
 
     if (calculatedComplement !== expectedComplement) {
@@ -91,7 +140,7 @@ function verifyRom(romData) {
 }
 
 
-// --- ROM Loading ---
+// --- ROM Loading and Core Execution ---
 
 window.loadRomFromFile = function(files) {
     if (files.length === 0) return;
@@ -134,7 +183,7 @@ function loadRomDataIntoEmulator(romData, fileName) {
     console.log(`[Emulator Core] Preparing to load ROM data for ${fileName}...`);
     
     if (!window.gbaBiosData) {
-        console.error('[Emulator Core] BIOS not loaded or failed to load. Cannot proceed.', 'error');
+        console.error('[Emulator Core] BIOS not loaded. Cannot proceed.', 'error');
         alert('BIOS loading failed. Check console for errors.');
         return;
     }
@@ -143,7 +192,6 @@ function loadRomDataIntoEmulator(romData, fileName) {
     let statusEl = document.getElementById(CONFIG.STATUS_ID);
     
     if (!window.gbaEmulatorInstance) {
-        // Pass BIOS data to the core on creation
         window.gbaEmulatorInstance = new GBAJS3_Core(container, window.gbaBiosData); 
         console.log('[Emulator Core] New emulator instance created with BIOS data.');
     }
@@ -162,35 +210,10 @@ function loadRomDataIntoEmulator(romData, fileName) {
     } 
 }
 
-// --- Main Execution Flow ---
-function startBootstrap() {
+// --- Main Execution Flow (Async) ---
+async function startBootstrap() {
     console.log('[Bootstrap] Starting client-side bootstrap...');
     
-    if (!checkCompatibility()) return;
-    if (!createDefaultStorage()) return;
-    
-    // Attempt to load the BIOS synchronously
-    if (!loadHardcodedBios()) {
-        const statusEl = document.getElementById(CONFIG.STATUS_ID);
-        statusEl.className = 'error';
-        statusEl.innerHTML = `ERROR: GBA BIOS failed to load. Ensure **gba_bios.bin** is in the correct folder.`;
-        return;
-    }
-    
-    const container = document.getElementById(CONFIG.EMULATOR_ID);
-    let statusEl = document.getElementById(CONFIG.STATUS_ID);
-    if (!statusEl) {
-        statusEl = document.createElement('div');
-        statusEl.id = CONFIG.STATUS_ID;
-        container.insertAdjacentElement('afterend', statusEl);
-    }
-    
-    statusEl.className = '';
-    statusEl.innerHTML = '<h2>Emulator Ready</h2><p>BIOS loaded. Please use the file input to load the **ROM (.gba)**.</p>';
-    
-    container.innerHTML = ''; 
-    
-    console.log('[Bootstrap] Bootstrap process complete. Waiting for ROM...', 'success');
-}
+    if (!checkCompatibility() || !createDefaultStorage()) return;
 
-window.onload = startBootstrap;
+    const statusEl = document.getElementById
