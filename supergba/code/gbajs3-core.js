@@ -195,57 +195,112 @@ class GBA_CPU {
                 this.registers[REG_PC] = currentPC + offset; 
                 
             } else if (isDataProcessing) {
-                // Data Processing Instruction (MOV)
-                if (opcode === 0b1101) { // MOV (simplified)
-                    const Rd = (instruction >> 12) & 0xF; 
-                    const isImmediate = instruction & 0x02000000;
+                // Data Processing Instruction (MOV, AND, ORR, etc.)
+                const Rd = (instruction >> 12) & 0xF; 
+                const isImmediate = instruction & 0x02000000;
+                
+                // Read Rn (first operand), defaults to R0 for simplicity if Rn is not needed
+                const RnIndex = (instruction >> 16) & 0xF;
+                let operand1 = this.registers[RnIndex]; 
+                
+                let operand2;
+                
+                // Determine Operand 2 (Immediate or Register)
+                if (isImmediate) {
+                    // Simplified: Use the 8-bit immediate value directly 
+                    operand2 = instruction & 0xFF; 
+                } else {
+                    const Rm = instruction & 0xF;
+                    operand2 = this.registers[Rm];
                     
-                    let operand2;
-                    if (isImmediate) {
-                        const imm8 = instruction & 0xFF;
-                        operand2 = imm8; 
-                    } else {
-                        const Rm = instruction & 0xF;
-                        let value = this.registers[Rm];
-                        
-                        // PC adjustment if used as source
-                        if (Rm === REG_PC) { 
-                            value = instructionAddress + 8;
-                        }
-                        
-                        operand2 = value;
-                    }
-                    
-                    this.registers[Rd] = operand2;
-                    
-                    if (instruction & 0x00100000) { // S-bit set
-                        this.setZNFlags(this.registers[Rd]);
+                    // PC adjustment if used as source
+                    if (Rm === REG_PC) { 
+                        operand2 = instructionAddress + 8;
                     }
                 }
+                
+                let result = 0;
+
+                switch (opcode) {
+                    case 0b0000: // AND
+                        result = operand1 & operand2;
+                        this.registers[Rd] = result;
+                        break;
+                        
+                    case 0b1100: // ORR (Logical OR)
+                        result = operand1 | operand2;
+                        this.registers[Rd] = result;
+                        break;
+                        
+                    case 0b1101: // MOV (Move)
+                        result = operand2; // Rn (operand1) is ignored for MOV
+                        this.registers[Rd] = result;
+                        break;
+                        
+                    default:
+                        // Unhandled opcode. Halt execution to prevent crashing.
+                        // console.log(`[CPU] Unhandled opcode: 0x${opcode.toString(16)}. Halting.`);
+                        return;
+                }
+                
+                // If S-bit is set, update flags
+                if (instruction & 0x00100000) { 
+                    this.setZNFlags(result);
+                }
+
             } else if (isLoadStore) {
-                // Load/Store Instruction (STR)
+                // Load/Store Instruction (STR/LDR)
                 const Rd = (instruction >> 12) & 0xF; 
                 const Rn = (instruction >> 16) & 0xF; 
                 
-                // Simplified Immediate Offset calculation
+                // Check if it's a byte transfer (LDRB/STRB) - bit 22
+                const isByteTransfer = (instruction >> 22) & 0x1; 
+
+                // Simplified Immediate Offset calculation (Offset/Immediate is bits 0-11)
                 const offset = instruction & 0xFFF; 
                 
                 // Address calculation (simplified: Base + Offset)
                 const baseAddress = this.registers[Rn];
                 const targetAddress = baseAddress + offset;
+                
+                // LDR/STR bit is bit 20 (1 = LDR, 0 = STR)
+                const isLoad = ((instruction >> 20) & 0x1) === 0x1; 
 
                 if (isStore) { // STR (Store Register)
                     const value = this.registers[Rd];
                     
-                    // Simplified: check for halfword/word alignment
-                    if (targetAddress & 0x3) { 
+                    // Simplified write access
+                    if (isByteTransfer) {
+                        // Not implemented yet
+                    } else if (targetAddress & 0x3) { 
                        // Unaligned write (16-bit)
                        this.bus.write16(targetAddress, value & 0xFFFF);
                     } else { 
                        // Aligned write (32-bit)
                        this.bus.write32(targetAddress, value);
                     }
-                } 
+                } else if (isLoad) { // LDR (Load Register)
+                    let loadedValue;
+                    
+                    if (isByteTransfer) {
+                        // LDRB (Load Byte) - Reads a full word and masks
+                        loadedValue = this.bus.read32(targetAddress) & 0xFF; 
+                    } else if (targetAddress & 0x3) {
+                        // Unaligned Load (16-bit) - Reads a halfword
+                        loadedValue = this.bus.read16(targetAddress);
+                    } else { 
+                        // Aligned Load (32-bit)
+                        loadedValue = this.bus.read32(targetAddress);
+                    }
+                    
+                    // The loaded value is placed into Rd
+                    this.registers[Rd] = loadedValue;
+                    
+                    // PC must be adjusted if it's the destination register (R15)
+                    if (Rd === REG_PC) {
+                        this.registers[REG_PC] &= 0xFFFFFFFC; // Align PC
+                    }
+                }
             }
         }
     }
