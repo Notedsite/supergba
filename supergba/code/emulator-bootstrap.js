@@ -1,16 +1,16 @@
 /**
- * EMULATOR BOOTSTRAP for GitHub Pages (GBAJS3)
- * * This script handles browser compatibility, storage setup, and initiates the 
+ * EMULATOR BOOTSTRAP for GitHub Pages (Control Flow)
+ * This script handles browser compatibility, storage setup, and initiates the 
  * emulator ONLY after the user has successfully uploaded a ROM file.
  */
 
-// Global configuration for the emulator environment
+// Global configuration 
 const CONFIG = {
     SAVE_PATH: 'gbajs_saves/',    // Key for local storage or IndexedDB
     EMULATOR_ID: 'gbajs-container' // ID of the HTML element to host the emulator
 };
 
-// Global variable to hold the emulator instance (must be defined globally)
+// Global variable to hold the emulator instance
 window.gbaEmulatorInstance = null; 
 
 // --- Core Bootstrap Functions (Run on Page Load) ---
@@ -61,15 +61,9 @@ function createDefaultStorage() {
 
 /**
  * Reads a ROM file selected by the user and passes it to the emulator core.
- * This is called directly by the 'onchange' event in the index.html file.
  * @param {FileList} files - The FileList object from the <input type="file"> event.
  */
 window.loadRomFromFile = function(files) {
-    if (!window.gbaEmulatorInstance) {
-        // Clear the emulator area to show loading status
-        document.getElementById(CONFIG.EMULATOR_ID).innerHTML = '<h2>Loading ROM...</h2><p>Please wait for file to be read.</p>';
-    }
-
     if (files.length === 0) {
         console.log('[ROM Loader] No file selected.');
         return;
@@ -83,7 +77,6 @@ window.loadRomFromFile = function(files) {
     if (fileExtension !== 'gba' && fileExtension !== 'zip') {
         console.error(`[ROM Loader] Invalid file type: ${fileExtension}. Please select a .gba or .zip file.`, 'error');
         alert('Invalid file type. Please select a .gba or .zip file.');
-        document.getElementById(CONFIG.EMULATOR_ID).innerHTML = '<p class="error">Invalid file type selected.</p>';
         return;
     }
 
@@ -102,45 +95,50 @@ window.loadRomFromFile = function(files) {
 
     reader.onerror = function(event) {
         console.error(`[ROM Loader] Error reading file: ${event.target.error.name}`, 'error');
-        document.getElementById(CONFIG.EMULATOR_ID).innerHTML = `<p class="error">File read error: ${event.target.error.name}</p>`;
     };
 
+    // Start reading the file
     reader.readAsArrayBuffer(file);
 }
 
 
 /**
  * Creates the emulator instance (if it doesn't exist) and loads the ROM data.
+ * This function is called ONLY when the ROM data is fully read from the file.
  * @param {ArrayBuffer} romData - The binary data of the ROM.
  * @param {string} fileName - The name of the ROM file.
  */
 function loadRomDataIntoEmulator(romData, fileName) {
-    console.log(`[Emulator Core] Loading ROM data for ${fileName}...`);
+    console.log(`[Emulator Core] Preparing to load ROM data for ${fileName}...`);
     
     const container = document.getElementById(CONFIG.EMULATOR_ID);
     
-    // --- STEP 1: CREATE THE EMULATOR INSTANCE (Only once) ---
+    // 1. CREATE THE EMULATOR INSTANCE (Only once)
     if (!window.gbaEmulatorInstance) {
-         // Replace the following two lines with your actual GBAJS3 instantiation:
-         // window.gbaEmulatorInstance = new GBAJS3(container); 
-         // console.log('[Emulator Core] New emulator instance created.');
-         
-         // Placeholder for the instance creation:
-         window.gbaEmulatorInstance = { loadRom: (data) => console.log('Mock loadRom called!') }; 
-         console.log('[Emulator Core] New emulator instance (mock) created.');
+         // Instantiate the core class we defined in gbajs3-core.js
+         window.gbaEmulatorInstance = new GBAJS3_Core(container); 
+         console.log('[Emulator Core] New emulator instance created.');
+    } else {
+        // If we are reloading a ROM, ensure the canvas is visible
+        if (window.gbaEmulatorInstance.screen) {
+            container.innerHTML = '';
+            container.appendChild(window.gbaEmulatorInstance.screen);
+        }
     }
 
-    // --- STEP 2: LOAD THE ROM ---
+    // 2. LOAD THE ROM AND START EXECUTION
     
     if (window.gbaEmulatorInstance && typeof window.gbaEmulatorInstance.loadRom === 'function') {
-        // This is where the actual emulator component starts the game engine.
-        window.gbaEmulatorInstance.loadRom(romData);
-        container.innerHTML = `<h2 class="success">${fileName} loaded! Game running.</h2>`;
-        console.log('[Emulator Core] ROM data passed to core successfully.', 'success');
-    } else {
-        console.error('[Emulator Core] Emulator instance ready, but loadRom function missing. Did you include your GBAJS3 library?', 'error');
-        container.innerHTML = `<p class="error">Failed to start: Emulator library not found.</p>`;
-    }
+        try {
+            window.gbaEmulatorInstance.loadRom(romData); 
+            
+            // Success message displayed outside the canvas
+            container.innerHTML += `<div class="success">Successfully loaded and started: ${fileName}</div>`;
+        } catch (e) {
+            console.error(`[Emulator Core] Error during ROM loading or starting: ${e.message}`, 'error');
+            container.innerHTML += `<p class="error">Error: Could not start game. Check console for details.</p>`;
+        }
+    } 
 }
 
 // --- Main Execution Flow ---
