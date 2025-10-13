@@ -13,8 +13,8 @@ class GBAJS3_Core {
 
         // --- 1. GBA Memory Map Setup (Stubs) ---
         // A. WORK RAM (32-bit access)
-        this.ewram = new Uint8Array(0x40000); // 256KB External Work RAM (Fast)
-        this.iwram = new Uint8Array(0x8000);  // 32KB Internal Work RAM (Faster)
+        this.ewram = new Uint8Array(0x40000); // 256KB External Work RAM
+        this.iwram = new Uint8Array(0x8000);  // 32KB Internal Work RAM
 
         // B. PPU RAM (Dedicated access)
         this.vram = new Uint8Array(0x18000); // 96KB Video RAM
@@ -22,11 +22,8 @@ class GBAJS3_Core {
         this.oam = new Uint8Array(0x400); // 1KB Object Attribute Memory
 
         // C. I/O REGISTERS (Controls everything)
-        // We'll use a DataView to handle 16-bit and 32-bit register access easily.
-        this.ioRegs = new ArrayBuffer(0x400); // Mapped at 0x04000000
+        this.ioRegs = new ArrayBuffer(0x400); 
         this.ioRegsView = new DataView(this.ioRegs);
-
-        // Define the KEYINPUT register address (relative to IO base 0x04000000)
         this.KEYINPUT_ADDR = 0x130; // Address 0x4000130
 
         // --- 2. Input Setup ---
@@ -80,7 +77,7 @@ class GBAJS3_Core {
     }
 
     // ------------------------------------------------------------------
-    // --- Input Handling (Now writes to the I/O Register) ---
+    // --- Input Handling (Writes to the I/O Register) ---
     // ------------------------------------------------------------------
     setupInputHandlers() {
         document.addEventListener('keydown', (e) => this.handleInput(e, true));
@@ -92,21 +89,15 @@ class GBAJS3_Core {
         if (keyBit) {
             event.preventDefault(); // Stop default browser behavior
 
-            // Write the new key state to the I/O register (KEYINPUT)
+            // Active LOW: 0 = pressed, 1 = released
             if (isKeyDown) {
-                // Key pressed: Set the corresponding bit to 0 (Active LOW)
-                this.keyInputRegister &= ~keyBit;
+                this.keyInputRegister &= ~keyBit; // Set bit to 0 (pressed)
             } else {
-                // Key released: Set the corresponding bit to 1
-                this.keyInputRegister |= keyBit;
+                this.keyInputRegister |= keyBit;  // Set bit to 1 (released)
             }
             
-            // Now, write the new state to the emulated I/O register space (Little Endian)
-            // The GBA CPU will read this 16-bit value from 0x4000130
+            // Write the new state to the emulated I/O register (0x4000130)
             this.ioRegsView.setUint16(this.KEYINPUT_ADDR, this.keyInputRegister, true);
-            
-            // Log for debugging
-            // console.log(`[Input] Key ${event.key} ${isKeyDown ? 'pressed' : 'released'}. KEYINPUT: ${this.keyInputRegister.toString(16).padStart(4, '0')}`);
         }
     }
 
@@ -117,7 +108,7 @@ class GBAJS3_Core {
         if (!this.paused && this.romLoaded) {
             this.frameCounter++;
             
-            // === STUB: Run CPU cycles for one frame (e.g., ~16.7ms or ~280,000 cycles)
+            // STUB: CPU Execution would happen here
             // this.cpu.runCycles(280896); 
             
             this.renderScreen();
@@ -126,43 +117,71 @@ class GBAJS3_Core {
     }
 
     // ------------------------------------------------------------------
-    // --- Rendering Logic (PPU Stub) ---
+    // --- Rendering Logic (PPU Stub: Visualization of ROM Data) ---
     // ------------------------------------------------------------------
     renderScreen() {
-        // This is a minimal stub to show interaction with the new frame buffer
-        
-        // 1. PPU Logic STUB: Simulate rendering a frame by drawing a simple pattern
+        if (!this.romData) return;
+
         const frameData = this.frameData;
+        const romView = new DataView(this.romData.buffer);
+        const romSize = this.romData.byteLength;
         const width = 240;
         const height = 160;
         
-        // Mock rendering based on frame counter (for visualization)
+        // Use a pointer that scrolls through the ROM data based on frame count
+        let romPointer = this.frameCounter * 3; 
+
+        // Get A-button state (Bit 0) for visualization effect
+        const A_BUTTON_BIT = 0x0001;
+        const aButtonPressed = !(this.keyInputRegister & A_BUTTON_BIT);
+
         for (let y = 0; y < height; y++) {
             for (let x = 0; x < width; x++) {
                 const i = (y * width + x) * 4;
                 
-                // Color logic: R based on x, G based on y, B based on time/frame count
-                frameData[i] = (x + this.frameCounter) & 0xFF;     // R
-                frameData[i + 1] = (y + this.frameCounter) & 0xFF; // G
-                frameData[i + 2] = 0xAA;                           // B (constant)
-                frameData[i + 3] = 0xFF;                           // Alpha (opaque)
+                // Read a byte from the ROM data, wrapping the address
+                const dataIndex = (romPointer + y * width + x) % romSize;
+                const tileByte = romView.getUint8(dataIndex);
+                
+                // --- Simple Mock PPU Palette Conversion ---
+                let r, g, b;
+                
+                if (tileByte < 0x20) {
+                    // Dark Blue/Black for low values
+                    r = 0x00; g = 0x00; b = 0x80;
+                } else if (tileByte < 0x80) {
+                    // Green/Mid-range for medium values
+                    r = 0x00; g = tileByte * 2; b = 0x00;
+                } else {
+                    // Red/White for high values
+                    r = 0xFF; g = 0xAA; b = 0xAA;
+                }
+
+                // Input Effect: Flash the screen red if the A button is pressed
+                if (aButtonPressed) {
+                    r = Math.min(255, r + 100);
+                    g = Math.max(0, g - 100);
+                    b = Math.max(0, b - 100);
+                }
+                
+                frameData[i] = r;      // R
+                frameData[i + 1] = g;  // G
+                frameData[i + 2] = b;  // B
+                frameData[i + 3] = 0xFF; // Alpha (Opaque)
             }
         }
-        
-        // 2. Mock Input Display (Read from the I/O Register)
-        // Convert the register value back to a list of active keys
+
+        // 2. Transfer to Canvas (Efficiently)
+        this.ctx.putImageData(this.frameBuffer, 0, 0);
+
+        // 3. Draw overlay (Input status)
         let pressedKeys = [];
         for (const [key, bit] of Object.entries(this.KEY_MAP)) {
-            // Check if the bit is 0 (Active LOW = pressed)
             if (!(this.keyInputRegister & bit)) { 
                 pressedKeys.push(key);
             }
         }
         
-        // 3. Transfer to Canvas (Efficiently)
-        this.ctx.putImageData(this.frameBuffer, 0, 0);
-
-        // 4. Draw overlay (since putImageData clears the canvas)
         this.ctx.fillStyle = '#FFFFFF';
         this.ctx.font = '10px monospace';
         this.ctx.textAlign = 'left';
@@ -180,18 +199,16 @@ class GBAJS3_Core {
             throw new Error("Empty ROM data provided.");
         }
 
-        // STUB: For a real emulator, you would copy this data into the 
-        // emulated Game Pak ROM region (starting at 0x08000000).
-        this.romData = new Uint8Array(romData); // Keep the ROM data accessible for now
+        // Store the ROM data as a Uint8Array
+        this.romData = new Uint8Array(romData); 
         
         this.romLoaded = true;
         this.paused = false;
         this.frameCounter = 0; // Reset state
         
-        // Clear KEYINPUT register (all keys released by default)
+        // Initialize KEYINPUT register to 'released'
         this.keyInputRegister = 0xFFFF;
         this.ioRegsView.setUint16(this.KEYINPUT_ADDR, this.keyInputRegister, true);
-
 
         // Start the continuous game loop only once
         if (!this.animationFrameId) {
