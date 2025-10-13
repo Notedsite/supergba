@@ -28,7 +28,7 @@
 <body>
 
     <h1>SuperGBA Emulator Bootstrap</h1>
-    <p>This is a client-side emulator architecture. Load a ROM to get started. Not affiliated with Nintendo.</p>
+    <p>This is a client-side emulator architecture. The **GBA BIOS is loading automatically** from the server. Please load a ROM to begin emulation.</p>
     <p><italic>Only standard GBA ROMs (.gba) are accepted and verified.</italic></p>
     
     <div id="rom-loader-area">
@@ -48,7 +48,7 @@
     <script src="emulator-bootstrap.js"></script>
 
     <script>
-        // Console logging interceptor remains the same for debugging
+        // Console logging interceptor
         const originalLog = console.log;
         const outputElement = document.getElementById('console-output');
         
@@ -71,5 +71,4 @@
     </script>
 
 </body>
-</html>
 </html>
