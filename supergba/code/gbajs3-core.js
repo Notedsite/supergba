@@ -21,17 +21,42 @@ const KEY_MAP = {
 };
 
 
-// === MemoryBus (Handles BIOS and ROM reads) ===
+// === MemoryBus (Handles BIOS, ROM, VRAM, and IO reads) ===
 class MemoryBus {
     constructor(ewram, iwram, vram, paletteRAM, oam, ioRegsView, romData, biosData) {
         this.ewram = ewram;
         this.iwram = iwram;
-        this.vram = vram;
-        this.paletteRAM = paletteRAM;
+        this.vram = vram; 
+        this.paletteRAM = paletteRAM; 
         this.oam = oam;
         this.ioRegsView = ioRegsView;
         this.romData = romData;
         this.biosData = biosData; 
+    }
+    
+    // Helper to read 16-bit data
+    read16(address) {
+        // 1. PRAM Read (0x05000000 - 0x050003FF)
+        if (address >= 0x05000000 && address < 0x05000400) {
+            const offset = address - 0x05000000;
+            const view = new DataView(this.paletteRAM.buffer);
+            return view.getUint16(offset, true); 
+        }
+        
+        // 2. VRAM Read (0x06000000 - 0x0601FFFF)
+        if (address >= 0x06000000 && address < 0x07000000) {
+            const offset = address - 0x06000000;
+            const view = new DataView(this.vram.buffer);
+            return view.getUint16(offset % this.vram.byteLength, true); 
+        }
+
+        // 3. IO Register Read (0x04000000 - 0x040003FE)
+        if (address >= 0x04000000 && address < 0x04000400) {
+            const offset = address - 0x04000000;
+            return this.ioRegsView.getUint16(offset, true);
+        }
+
+        return this.read32(address) & 0xFFFF;
     }
 
     read32(address) {
@@ -70,7 +95,6 @@ class GBA_CPU {
         this.registers = new Uint32Array(16);
         this.CPSR = 0x00000010 | ARM_MODE; 
         
-        // PC starts at 0x00000000 (BIOS entry)
         this.registers[REG_PC] = 0x00000000; 
         
         console.log('[GBA_CPU] Initialized. PC set to 0x00000000 (BIOS Start).');
@@ -145,7 +169,7 @@ class GBA_CPU {
 }
 
 
-// === GBAJS3_Core ===
+// === GBAJS3_Core (PPU/IO Initialization) ===
 class GBAJS3_Core {
     constructor(containerElement, biosData) {
         this.container = containerElement;
@@ -157,16 +181,20 @@ class GBAJS3_Core {
         // Memory Stubs
         this.ewram = new Uint8Array(0x40000); 
         this.iwram = new Uint8Array(0x8000);  
-        this.vram = new Uint8Array(0x18000); 
-        this.paletteRAM = new Uint8Array(0x400); 
+        this.vram = new Uint8Array(0x18000); // 96KB
+        this.paletteRAM = new Uint8Array(0x400); // 1KB
         this.oam = new Uint8Array(0x400); 
         this.ioRegs = new ArrayBuffer(0x400); 
         this.ioRegsView = new DataView(this.ioRegs);
         this.KEYINPUT_ADDR = 0x130; 
         this.keyInputRegister = 0xFFFF;
         this.KEY_MAP = KEY_MAP; 
+        
+        // PPU/IO REGISTERS
+        this.REG_DISPCNT = 0x000; // Address 0x04000000
+        this.ioRegsView.setUint16(this.REG_DISPCNT, 0x0000, true); 
 
-        // Initialize Bus and CPU (pass BIOS data)
+        // Initialize Bus and CPU
         this.bus = new MemoryBus(
             this.ewram, this.iwram, this.vram, this.paletteRAM, 
             this.oam, this.ioRegsView, null, biosData
@@ -237,77 +265,54 @@ class GBAJS3_Core {
         const width = 240;
         const height = 160;
         
-        let romPointer = this.cpu.registers[0]; 
-        const frameColorShift = (this.frameCounter * 5) % 256; 
+        // 1. Check Display Mode (Read DISPCNT from IO Registers)
+        const dispcnt = this.ioRegsView.getUint16(this.REG_DISPCNT, true);
+        const displayMode = dispcnt & 0x7; // Bits 0-2 contain the mode (0-5)
         
-        const A_BUTTON_BIT = 0x0001;
-        const aButtonPressed = !(this.keyInputRegister & A_BUTTON_BIT);
+        // Base VRAM address for Mode 3 is 0x06000000
+        const vramView = new DataView(this.vram.buffer);
+        
+        if (displayMode === 3) {
+            // Mode 3: 240x160, 16-bit color bitmap
+            
+            for (let y = 0; y < height; y++) {
+                for (let x = 0; x < width; x++) {
+                    const i = (y * width + x) * 4; // Index into the 32-bit (RGBA) frameData
+                    
+                    // VRAM offset: (y * 240 + x) * 2 bytes/pixel
+                    const vram_offset = (y * width + x) * 2;
+                    
+                    // Read 16-bit color value (BGR-555)
+                    const color16 = vramView.getUint16(vram_offset, true);
 
-        for (let y = 0; y < height; y++) {
-            for (let x = 0; x < width; x++) {
-                const i = (y * width + x) * 4;
-                
-                let r = (x + frameColorShift) % 256;
-                let g = (y + frameColorShift / 2) % 256;
-                let b = (romPointer + x + y) % 256; 
+                    // Convert BGR-555 to RGB-888
+                    let r5 = (color16 >> 10) & 0x1F; 
+                    let g5 = (color16 >> 5) & 0x1F;
+                    let b5 = color16 & 0x1F;
 
-                if (aButtonPressed) {
-                    r = Math.min(255, r + 100);
-                    g = Math.max(0, g - 100);
-                    b = Math.max(0, b - 100);
+                    // Scale 5-bit (0-31) to 8-bit (0-255)
+                    let r8 = (r5 << 3) | (r5 >> 2);
+                    let g8 = (g5 << 3) | (g5 >> 2);
+                    let b8 = (b5 << 3) | (b5 >> 2);
+                    
+                    // Write to canvas frame buffer
+                    frameData[i] = r8;      
+                    frameData[i + 1] = g8;  
+                    frameData[i + 2] = b8;  
+                    frameData[i + 3] = 0xFF; // Alpha
                 }
-                
-                frameData[i] = r;      
-                frameData[i + 1] = g;  
-                frameData[i + 2] = b;  
-                frameData[i + 3] = 0xFF;
             }
+        } else {
+            // Placeholder/Not Implemented Mode Drawing
+            this.drawPlaceholder(); 
+            this.ctx.fillText(`Mode ${displayMode} not implemented.`, 120, 110);
+            
+            // Re-apply placeholder image data to clear any previous game screen data
+            this.ctx.putImageData(this.frameBuffer, 0, 0); 
         }
 
         this.ctx.putImageData(this.frameBuffer, 0, 0);
 
-        // Draw overlay
+        // Draw overlay (Keep status text for debugging)
         let pressedKeys = [];
-        for (const [key, bit] of Object.entries(this.KEY_MAP)) {
-            if (!(this.keyInputRegister & bit)) { 
-                pressedKeys.push(key);
-            }
-        }
-        
-        this.ctx.fillStyle = '#FFFFFF';
-        this.ctx.font = '10px monospace';
-        this.ctx.textAlign = 'left';
-        this.ctx.fillText(`Frame: ${this.frameCounter}`, 5, 10);
-        this.ctx.fillText(`PC: 0x${this.cpu.registers[REG_PC].toString(16).padStart(8, '0')}`, 5, 20);
-        this.ctx.fillText(`R0: 0x${this.cpu.registers[0].toString(16).padStart(8, '0')}`, 5, 30);
-        this.ctx.fillText(`CPSR: 0x${this.cpu.CPSR.toString(16).padStart(8, '0')}`, 5, 40);
-        this.ctx.fillText(`Input: ${pressedKeys.join(', ') || 'None'}`, 5, 155);
-    }
-    
-    loadRom(romData) {
-        if (!romData || romData.byteLength === 0) {
-            console.error('[GBAJS3_Core] Cannot load empty ROM data.');
-            throw new Error("Empty ROM data provided.");
-        }
-
-        this.romData = new Uint8Array(romData); 
-        this.bus.romData = this.romData; 
-        
-        this.romLoaded = true;
-        this.paused = false;
-        this.frameCounter = 0;
-        this.keyInputRegister = 0xFFFF;
-        this.ioRegsView.setUint16(this.KEYINPUT_ADDR, this.keyInputRegister, true);
-
-        if (!this.animationFrameId) {
-            this.runGameLoop();
-        }
-
-        console.log(`[GBAJS3_Core] Loaded ROM data (${romData.byteLength} bytes). CPU is running one instruction per frame.`);
-    }
-
-    pause() {
-        this.paused = true;
-        console.log('[GBAJS3_Core] Paused.');
-    }
-}
+        for (const [key, bit] of Object.entries(this.KEY
