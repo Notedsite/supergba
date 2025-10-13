@@ -6,7 +6,7 @@
 
 // Global configuration 
 const CONFIG = {
-    SAVE_PATH: 'gbajs_saves/',      // Key for local storage or IndexedDB
+    SAVE_PATH: 'gbajs_saves/',    // Key for local storage or IndexedDB
     EMULATOR_ID: 'gbajs-container', // ID of the HTML element to host the emulator
     STATUS_ID: 'emulator-status'    // ID for the dedicated status message element
 };
@@ -33,7 +33,6 @@ function checkCompatibility() {
     if (!compatible) {
         const message = 'ERROR: Your browser is too old or lacks necessary features for emulation.';
         const container = document.getElementById(CONFIG.EMULATOR_ID);
-        // Display error in the main container before the status element is set up
         if (container) {
             container.innerHTML = `<p class="error">${message}</p>`;
         }
@@ -78,9 +77,10 @@ window.loadRomFromFile = function(files) {
     const fileName = file.name;
     const fileExtension = fileName.slice(((fileName.lastIndexOf(".") - 1) >>> 0) + 2).toLowerCase();
     
-    if (fileExtension !== 'gba' && fileExtension !== 'zip') {
-        console.error(`[ROM Loader] Invalid file type: ${fileExtension}. Please select a .gba or .zip file.`, 'error');
-        alert('Invalid file type. Please select a .gba or .zip file.');
+    // VALIDATION CORRECTED: Only accepting .gba
+    if (fileExtension !== 'gba') {
+        console.error(`[ROM Loader] Invalid file type: ${fileExtension}. Please select a .gba file.`, 'error');
+        alert('Invalid file type. Please select a .gba file.');
         return;
     }
 
@@ -115,7 +115,6 @@ function loadRomDataIntoEmulator(romData, fileName) {
     
     const container = document.getElementById(CONFIG.EMULATOR_ID);
     
-    // Get the status element for feedback
     let statusEl = document.getElementById(CONFIG.STATUS_ID);
     if (!statusEl) {
         console.error('[Emulator Core] Missing required status element.');
@@ -124,7 +123,6 @@ function loadRomDataIntoEmulator(romData, fileName) {
 
     // 1. CREATE THE EMULATOR INSTANCE (Only once, upon first ROM load)
     if (!window.gbaEmulatorInstance) {
-        // This call creates the canvas and appends it to the container
         window.gbaEmulatorInstance = new GBAJS3_Core(container); 
         console.log('[Emulator Core] New emulator instance created.');
     }
@@ -134,12 +132,10 @@ function loadRomDataIntoEmulator(romData, fileName) {
         try {
             window.gbaEmulatorInstance.loadRom(romData); 
             
-            // Update the dedicated status message element
             statusEl.className = 'success';
             statusEl.innerHTML = `Successfully loaded and started: <strong>${fileName}</strong>`;
         } catch (e) {
             console.error(`[Emulator Core] Error during ROM loading or starting: ${e.message}`, 'error');
-            // Update status message on error
             statusEl.className = 'error';
             statusEl.innerHTML = `Error: Could not start game. Check console for details.`;
         }
@@ -155,20 +151,16 @@ function startBootstrap() {
     
     const container = document.getElementById(CONFIG.EMULATOR_ID);
     
-    // Create or update status element that lives below the canvas container
     let statusEl = document.getElementById(CONFIG.STATUS_ID);
     if (!statusEl) {
         statusEl = document.createElement('div');
         statusEl.id = CONFIG.STATUS_ID;
-        // Insert the status element immediately after the emulator container
         container.insertAdjacentElement('afterend', statusEl);
     }
     
-    // Update UI to show we're ready for input
     statusEl.className = '';
     statusEl.innerHTML = '<h2>Emulator Ready</h2><p>Please use the **"Select a ROM"** button to start a game.</p>';
     
-    // Clear the main container so the canvas can be placed without conflict upon first load
     container.innerHTML = ''; 
     
     console.log('[Bootstrap] Bootstrap process complete. Waiting for ROM file...', 'success');
