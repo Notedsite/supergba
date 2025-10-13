@@ -233,7 +233,7 @@ async function startBootstrap() {
     statusEl.className = '';
     statusEl.innerHTML = '<h2>Emulator Ready</h2><p>BIOS loaded. Please use the file input to load the **ROM (.gba)**.</p>';
     
-    container.innerHTML = ''; 
+    //container.innerHTML = ''; 
     
     console.log('[Bootstrap] Bootstrap process complete. Waiting for ROM...', 'success');
 }
