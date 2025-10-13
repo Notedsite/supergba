@@ -1,6 +1,6 @@
 /**
  * GBAJS3_Core - Mock Emulator Library
- * * This class provides the display surface and the public methods (like loadRom) 
+ * * This class provides the display surface (canvas) and the public methods 
  * that the bootstrap script expects, allowing the architecture to function.
  */
 class GBAJS3_Core {
@@ -46,7 +46,7 @@ class GBAJS3_Core {
         this.isRunning = true;
         
         // --- THIS IS WHERE YOUR REAL EMULATION LOGIC STARTS ---
-        // (e.g., Load ROM into memory, initialize CPU state, begin requestAnimationFrame loop)
+        // The game would start drawing to 'this.screen' here.
 
         // Mock: Clear the canvas and display a "running" message
         const ctx = this.screen.getContext('2d');
