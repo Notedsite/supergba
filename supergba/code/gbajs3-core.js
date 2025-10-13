@@ -21,8 +21,6 @@ class MemoryBus {
     read32(address) {
         if (address >= 0x08000000 && this.romData) {
             const romBase = 0x08000000;
-            // The GBA PC is offset by 8 bytes due to pipelining, so the fetched address is PC - 8.
-            // For now, we'll keep the simple direct read but remember the PC offset for later.
             const offset = (address - romBase) % this.romData.byteLength;
             const romView = new DataView(this.romData.buffer);
             try {
@@ -41,122 +39,88 @@ class GBA_CPU {
     constructor(bus) {
         this.bus = bus;
         this.registers = new Uint32Array(16);
-        this.CPSR = 0x00000010 | ARM_MODE; // Default flags and mode
+        this.CPSR = 0x00000010 | ARM_MODE; 
         
-        // GBA ROM execution typically starts after the 16-byte header
-        this.registers[REG_PC] = 0x08000000; 
+        // CRITICAL FIX: Set PC to 0x08000000 + 8 (pipeline)
+        this.registers[REG_PC] = 0x08000008; 
         
-        console.log('[GBA_CPU] Initialized. PC set to 0x08000000. Ready to execute ARM instructions.');
+        console.log('[GBA_CPU] Initialized. PC set to 0x08000008 (ROM Start + 8).');
     }
 
-    /** Helper to update the Zero and Negative flags. */
     setZNFlags(result) {
-        this.CPSR &= ~(FLAG_Z | FLAG_N); // Clear Z and N flags
+        this.CPSR &= ~(FLAG_Z | FLAG_N);
         if (result === 0) {
             this.CPSR |= FLAG_Z;
         }
-        // Check sign bit (bit 31)
         if (result & 0x80000000) { 
             this.CPSR |= FLAG_N;
         }
     }
 
-    /**
-     * Executes a set number of CPU cycles (one mock instruction for now).
-     */
     runCycles(cycles) {
-        // We'll execute one instruction per call to keep the core responsive
-        // and allow the PPU to render a frame.
         this.executeNextInstruction();
     }
 
-    /**
-     * The core Fetch-Decode-Execute cycle for ARM instructions.
-     */
     executeNextInstruction() {
-        // ARM instruction fetching: The PC points to the instruction + 8.
-        // The instruction we want is at PC - 8.
         const currentPC = this.registers[REG_PC];
         
-        // 1. Fetch: Read the instruction word
-        // In ARM state, instructions are always 4 bytes, aligned to a 4-byte boundary.
-        const instruction = this.bus.read32(currentPC);
+        // 1. Fetch: Instruction is located at PC - 8
+        const instructionAddress = currentPC - 8;
+        const instruction = this.bus.read32(instructionAddress);
         
-        // 2. Decode: Extract instruction components (simplified for now)
-        const opcode = (instruction >> 21) & 0xF; // Bits 24-21 determine opcode for Data Processing
-        const cond = (instruction >> 28) & 0xF; // Bits 31-28 is the condition code
-        const isBranch = (instruction >> 24) === 0b101; // Instruction bits 27-24 = 101X
-        const isDataProcessing = (instruction >> 26) === 0b00; // Instruction bits 27-26 = 00
+        // 2. Decode: 
+        const opcode = (instruction >> 21) & 0xF; 
+        const cond = (instruction >> 28) & 0xF; 
+        const isBranch = ((instruction >> 25) & 0b111) === 0b101; // Bits 27-25 = 101
+        const isDataProcessing = (instruction >> 26) === 0b00; 
         
-        // --- 3. Execute ---
+        // 3. PC Advance (Default: assume no branch and advance to next instruction address)
+        this.registers[REG_PC] += 4; 
+        
+        // --- 4. Execute ---
         
         // Check Condition Code (Stub: Always execute if cond is AL/0b1110)
         if (cond === 0b1110) { 
             
             if (isBranch) {
-                // === Implement Instruction: B (Branch) ===
-                // Format: 1010 L offset (24 bits)
-                
-                // Sign-extend the 24-bit offset to 32 bits, then shift left by 2 (as it's word offset)
+                // === Instruction: B (Branch) ===
                 let offset = (instruction & 0x00FFFFFF) << 2; 
                 if (offset & 0x02000000) {
-                    // Sign-extension for negative jump
                     offset |= 0xFC000000; 
                 }
                 
-                // Branch target is (PC - 8) + offset. The -8 is for the ARM pipeline.
-                this.registers[REG_PC] = (currentPC - 4) + offset;
-                
-                // If it was a Branch with Link (BL), R14 (LR) would be set here.
+                // Target is (Instruction Address) + offset + 8 (pipeline)
+                this.registers[REG_PC] = instructionAddress + offset + 4; // Target is (PC - 4) + offset
                 
             } else if (isDataProcessing) {
-                // === Implement Instruction: MOV (Move) - Simplified Case (Opcode 0b1101) ===
+                // === Instruction: MOV (Move) - Simplified Case (Opcode 0b1101) ===
                 if (opcode === 0b1101) { 
-                    const Rd = (instruction >> 12) & 0xF; // Destination Register
-                    const isImmediate = instruction & 0x02000000; // Bit 25
+                    const Rd = (instruction >> 12) & 0xF; 
+                    const isImmediate = instruction & 0x02000000;
                     
                     let operand2;
                     if (isImmediate) {
-                        // Simplified: Read the immediate value (8 bits rotated)
                         const imm8 = instruction & 0xFF;
-                        const rot4 = (instruction >> 8) & 0xF;
-                        // Full rotation logic is complex, simplify to just the immediate for now
+                        // const rot4 = (instruction >> 8) & 0xF; // Full rotation skipped for simplicity
                         operand2 = imm8; 
-                        
                     } else {
-                        // Register operand (stub: Read from the source register)
                         const Rm = instruction & 0xF;
                         operand2 = this.registers[Rm];
                     }
                     
-                    // Execute MOV: Rd = operand2
                     this.registers[Rd] = operand2;
                     
-                    // If the S-bit (Bit 20) was set, update flags
                     if (instruction & 0x00100000) {
                         this.setZNFlags(this.registers[Rd]);
                     }
                 }
-                
-                // STUB: ADD, SUB, AND, ORR, etc. would go here.
             }
-            
-            // 4. PC Update: If no branch happened, advance PC by one instruction (4 bytes).
-            // This is skipped if a branch/jump instruction has already updated the PC.
-            if (!isBranch) {
-                this.registers[REG_PC] += 4; 
-            }
-        } else {
-            // Condition failed: Skip instruction by advancing PC
-            this.registers[REG_PC] += 4;
         }
-
-        // console.log(`[CPU] Executed 0x${instruction.toString(16).padStart(8, '0')} at PC 0x${currentPC.toString(16).padStart(8, '0')}`);
     }
 }
 
 
-// === GBAJS3_Core (Unchanged structure, relies on the new CPU logic) ===
+// === GBAJS3_Core (Updated loadRom) ===
 class GBAJS3_Core {
     constructor(containerElement) {
         this.container = containerElement;
@@ -176,7 +140,7 @@ class GBAJS3_Core {
         this.KEYINPUT_ADDR = 0x130; 
         this.keyInputRegister = 0xFFFF;
 
-        // Initialize Bus and CPU with new classes
+        // Initialize Bus and CPU
         this.bus = new MemoryBus(
             this.ewram, this.iwram, this.vram, this.paletteRAM, 
             this.oam, this.ioRegsView, null
@@ -229,9 +193,7 @@ class GBAJS3_Core {
         if (!this.paused && this.romLoaded) {
             this.frameCounter++;
             
-            // --- CRITICAL CHANGE: We run only ONE instruction per frame ---
-            // A real emulator runs ~280,000 cycles. We must run at least one
-            // instruction now that the CPU logic is in place.
+            // Execute one instruction
             this.cpu.runCycles(1); 
             
             this.renderScreen();
@@ -300,8 +262,8 @@ class GBAJS3_Core {
         this.ctx.textAlign = 'left';
         this.ctx.fillText(`Frame: ${this.frameCounter}`, 5, 10);
         this.ctx.fillText(`PC: 0x${this.cpu.registers[REG_PC].toString(16).padStart(8, '0')}`, 5, 20);
-        this.ctx.fillText(`R0: 0x${this.cpu.registers[0].toString(16).padStart(8, '0')}`, 5, 30); // Show R0
-        this.ctx.fillText(`CPSR: 0x${this.cpu.CPSR.toString(16).padStart(8, '0')}`, 5, 40); // Show Flags
+        this.ctx.fillText(`R0: 0x${this.cpu.registers[0].toString(16).padStart(8, '0')}`, 5, 30);
+        this.ctx.fillText(`CPSR: 0x${this.cpu.CPSR.toString(16).padStart(8, '0')}`, 5, 40);
         this.ctx.fillText(`Input: ${pressedKeys.join(', ') || 'None'}`, 5, 155);
     }
     
@@ -320,10 +282,10 @@ class GBAJS3_Core {
         this.keyInputRegister = 0xFFFF;
         this.ioRegsView.setUint16(this.KEYINPUT_ADDR, this.keyInputRegister, true);
 
-        // Reset PC to the start of the ROM
-        this.cpu.registers.fill(0); // Clear all registers
+        // Reset PC to the start of the ROM + 8 for pipeline
+        this.cpu.registers.fill(0);
         this.cpu.CPSR = 0x00000010 | ARM_MODE;
-        this.cpu.registers[REG_PC] = 0x08000000; 
+        this.cpu.registers[REG_PC] = 0x08000008; 
 
         if (!this.animationFrameId) {
             this.runGameLoop();
