@@ -73,7 +73,6 @@ window.loadRomFromFile = function(files) {
     const fileName = file.name;
     const fileExtension = fileName.slice(((fileName.lastIndexOf(".") - 1) >>> 0) + 2).toLowerCase();
     
-    // Validation check for supported file types
     if (fileExtension !== 'gba' && fileExtension !== 'zip') {
         console.error(`[ROM Loader] Invalid file type: ${fileExtension}. Please select a .gba or .zip file.`, 'error');
         alert('Invalid file type. Please select a .gba or .zip file.');
@@ -89,7 +88,6 @@ window.loadRomFromFile = function(files) {
         const romData = event.target.result; // ArrayBuffer containing the ROM
         console.log('[ROM Loader] File successfully read into memory.');
         
-        // Pass Data to the Emulator Core
         loadRomDataIntoEmulator(romData, fileName);
     };
 
@@ -104,7 +102,6 @@ window.loadRomFromFile = function(files) {
 
 /**
  * Creates the emulator instance (if it doesn't exist) and loads the ROM data.
- * This function is called ONLY when the ROM data is fully read from the file.
  * @param {ArrayBuffer} romData - The binary data of the ROM.
  * @param {string} fileName - The name of the ROM file.
  */
@@ -113,13 +110,13 @@ function loadRomDataIntoEmulator(romData, fileName) {
     
     const container = document.getElementById(CONFIG.EMULATOR_ID);
     
-    // 1. CREATE THE EMULATOR INSTANCE (Only once)
+    // 1. CREATE THE EMULATOR INSTANCE (Only once, upon first ROM load)
     if (!window.gbaEmulatorInstance) {
-         // Instantiate the core class we defined in gbajs3-core.js
+         // This call creates the canvas and appends it to the container
          window.gbaEmulatorInstance = new GBAJS3_Core(container); 
          console.log('[Emulator Core] New emulator instance created.');
     } else {
-        // If we are reloading a ROM, ensure the canvas is visible
+        // If reloading, ensure the canvas is visible in the container
         if (window.gbaEmulatorInstance.screen) {
             container.innerHTML = '';
             container.appendChild(window.gbaEmulatorInstance.screen);
