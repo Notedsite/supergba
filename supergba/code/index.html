@@ -1,55 +1,17 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>GBAJS3 Emulator - GitHub Pages</title>
-    <style>
-        body { font-family: sans-serif; max-width: 800px; margin: 40px auto; line-height: 1.6; }
-        #console-output { border: 1px solid #ccc; padding: 15px; background: #f9f9f9; min-height: 150px; white-space: pre-wrap; margin-top: 10px; }
-        .success { color: green; font-weight: bold; }
-        .error { color: red; font-weight: bold; }
-        #rom-loader-area { margin-bottom: 20px; padding: 10px; border: 1px dashed #ddd; }
-    </style>
 </head>
 <body>
-
-    <h1>GBA Emulator Bootstrap</h1>
-
-    <div id="rom-loader-area">
-        <label for="rom-file">Select a ROM (.gba):</label>
-        <input type="file" id="rom-file" accept=".gba" onchange="window.loadRomFromFile(this.files)">
-    </div>
 
     <div id="gbajs-container">
         Loading emulator core...
     </div>
 
-    <hr>
-    <h3>Console Output:</h3>
-    <pre id="console-output"></pre>
-
+    <script src="gbajs3-core.js"></script> 
+    
     <script src="emulator-bootstrap.js"></script>
 
-    <script>
-        const originalLog = console.log;
-        const outputElement = document.getElementById('console-output');
-        
-        console.log = function(...args) {
-            originalLog.apply(console, args);
-            const message = args.map(arg => typeof arg === 'object' ? JSON.stringify(arg) : arg).join(' ');
-            
-            let color = 'inherit';
-            if (message.includes('ERROR')) color = 'red';
-            if (message.includes('success')) color = 'green';
-            
-            outputElement.innerHTML += `<span class="${color}">${message}</span>\n`;
-        };
-        console.error = function(...args) {
-            originalLog.apply(console, args);
-            outputElement.innerHTML += `<span class="error">[ERROR] ${args.join(' ')}</span>\n`;
-        };
-    </script>
-
-</body>
+    </body>
 </html>
