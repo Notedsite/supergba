@@ -1,16 +1,19 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>GBAJS3 Emulator - GitHub Pages</title>
 </head>
 <body>
 
     <h1>GBA Emulator</h1>
 
+    <div id="rom-loader-area">
+        <label for="rom-file">Select a ROM (.gba):</label>
+        <input type="file" id="rom-file" accept=".gba" onchange="window.loadRomFromFile(this.files)">
+    </div>
+
     <div id="gbajs-container">
-        Loading emulator...
+        Please load a ROM to begin.
     </div>
 
     <hr>
@@ -19,26 +22,5 @@
 
     <script src="emulator-bootstrap.js"></script>
 
-    <script>
-        // Simple function to mirror console logs to the HTML output
-        const originalLog = console.log;
-        const outputElement = document.getElementById('console-output');
-        
-        console.log = function(...args) {
-            originalLog.apply(console, args);
-            const message = args.map(arg => typeof arg === 'object' ? JSON.stringify(arg) : arg).join(' ');
-            
-            let color = 'inherit';
-            if (message.includes('ERROR')) color = 'red';
-            if (message.includes('success')) color = 'green';
-            
-            outputElement.innerHTML += `<span style="color:${color};">${message}</span>\n`;
-        };
-        console.error = function(...args) {
-            originalLog.apply(console, args);
-            outputElement.innerHTML += `<span style="color:red;">[ERROR] ${args.join(' ')}</span>\n`;
-        };
-    </script>
-
-</body>
+    </body>
 </html>
