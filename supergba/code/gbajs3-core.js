@@ -6,7 +6,6 @@ class GBAJS3_Core {
      */
     constructor(containerElement) {
         this.container = containerElement; 
-        // Mock variables
         this.paused = true;
         this.romLoaded = false;
 
@@ -20,7 +19,6 @@ class GBAJS3_Core {
         this.screen.style.height = '160px'; 
         
         // 2. Append the canvas to the container
-        // The container is expected to be cleared by the bootstrap before this call
         this.container.appendChild(this.screen);
         
         // 3. Draw a placeholder message on the canvas
@@ -51,28 +49,47 @@ class GBAJS3_Core {
         this.romLoaded = true;
         this.paused = false;
 
-        // Mock: Clear the canvas and display a "running" message
         const ctx = this.screen.getContext('2d');
         
-        // FIX: Clear the canvas explicitly before drawing the new scene
+        // Clear the canvas
         ctx.clearRect(0, 0, 240, 160);
         
-        ctx.fillStyle = '#006400'; // Dark Green (Simulating GBA splash/boot)
+        // Set a default background
+        ctx.fillStyle = '#101010'; 
         ctx.fillRect(0, 0, 240, 160);
         
-        ctx.fillStyle = '#FFFFFF';
-        ctx.font = '12px sans-serif';
-        ctx.textAlign = 'center';
-        ctx.fillText('Game is Running!', 120, 70);
-        ctx.fillText(`ROM Size: ${romData.byteLength} bytes`, 120, 90);
+        // === MOCK GAME RENDERING LOGIC (The crucial new part) ===
+        const dataView = new DataView(romData);
         
-        // Mock: Start a game loop (in a real emulator, this would be requestAnimationFrame)
-        // setInterval(() => { /* run cpu cycle */ }, 16); 
+        // 1. Read the first 240 bytes (one byte per pixel across the top row)
+        const bytesToRead = Math.min(240, romData.byteLength); 
+
+        for (let x = 0; x < bytesToRead; x++) {
+            // Get one byte of data from the ROM
+            const byteValue = dataView.getUint8(x); 
+            
+            // Use the byte value to generate a color. 
+            // We'll use the value for Red and Green components, and 50 for Blue.
+            const r = byteValue;          // 0-255
+            const g = (byteValue + 50) % 256; // Shifted G
+            const b = 50;                 // Fixed B
+            
+            ctx.fillStyle = `rgb(${r}, ${g}, ${b})`;
+            
+            // Draw a vertical bar 4 pixels tall for each byte
+            ctx.fillRect(x, 0, 1, 4);
+        }
+        
+        // 2. Display a success message *on the canvas* below the mock game data
+        ctx.fillStyle = '#FFFFFF';
+        ctx.font = '10px monospace';
+        ctx.textAlign = 'left';
+        ctx.fillText(`MOCK GAME SCREEN: ROM Signature Generated (${bytesToRead} bytes used)`, 5, 10);
+        ctx.fillText('Emulator is now running the main loop.', 5, 150);
+        // =======================================================
 
         console.log(`[GBAJS3_Core] Loaded ROM data (${romData.byteLength} bytes) and started main loop.`, 'success');
     }
     
     // Placeholder for other core methods (e.g., saveState, pause, controls)
-    // saveState() { /* ... */ }
-    // pause() { this.paused = true; }
 }
