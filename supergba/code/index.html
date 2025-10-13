@@ -11,28 +11,30 @@
     .error { color: red; font-weight: bold; }
     #rom-loader-area { margin-bottom: 20px; padding: 10px; border: 1px dashed #ddd; }
     
-    /* === FIX: Ensure the emulator container is ready and centered === */
     #gbajs-container { 
         min-height: 200px; 
         margin-bottom: 20px;
-        display: flex; /* Enable flexbox for centering */
-        justify-content: center; /* Center horizontally */
-        align-items: center; /* Center vertically */
+        display: flex;
+        justify-content: center;
+        align-items: center;
     }
     #gbajs-container canvas {
-        /* Optional: Add a subtle shadow or zoom */
         box-shadow: 0 4px 8px rgba(0,0,0,0.2);
-        transform: scale(2); /* Magnify the small GBA screen */
-        image-rendering: pixelated; /* Keep the classic pixel look */
+        transform: scale(2);
+        image-rendering: pixelated;
     }
 </style>
 </head>
 <body>
 
     <h1>SuperGBA Emulator Bootstrap</h1>
-    <p>This is a client-side emulator architecture. Please load a ROM to begin emulation.</p>
-    <p><italic>10/13/2025: Removed support for .zips, as they would bug too much.</italic></p>
+    <p>This is a client-side emulator architecture. Please load the BIOS and a ROM to begin emulation.</p>
+    <p><italic>Only standard GBA ROMs (.gba) are accepted. BIOS file must be loaded first.</italic></p>
+    
     <div id="rom-loader-area">
+        <label for="bios-file">Select GBA BIOS (gba_bios.bin):</label>
+        <input type="file" id="bios-file" accept=".bin" onchange="window.loadBiosFromFile(this.files)">
+        <br><br>
         <label for="rom-file">Select a ROM (.gba):</label>
         <input type="file" id="rom-file" accept=".gba" onchange="window.loadRomFromFile(this.files)">
     </div>
@@ -46,11 +48,10 @@
     <pre id="console-output">Ready to begin checks...</pre>
 
     <script src="gbajs3-core.js"></script> 
-    
     <script src="emulator-bootstrap.js"></script>
 
     <script>
-        // Console logging interceptor remains the same
+        // Console logging interceptor remains the same for debugging
         const originalLog = console.log;
         const outputElement = document.getElementById('console-output');
         
@@ -72,7 +73,5 @@
         };
     </script>
 
-</body>
-</html>
 </body>
 </html>
