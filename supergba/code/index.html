@@ -28,13 +28,10 @@
 <body>
 
     <h1>SuperGBA Emulator Bootstrap</h1>
-    <p>This is a client-side emulator architecture. Please load the BIOS and a ROM to begin emulation.</p>
-    <p><italic>Only standard GBA ROMs (.gba) are accepted. BIOS file must be loaded first.</italic></p>
+    <p>This is a client-side emulator architecture. Load a ROM to get started. Not affiliated with Nintendo.</p>
+    <p><italic>Only standard GBA ROMs (.gba) are accepted and verified.</italic></p>
     
     <div id="rom-loader-area">
-        <label for="bios-file">Select GBA BIOS (gba_bios.bin):</label>
-        <input type="file" id="bios-file" accept=".bin" onchange="window.loadBiosFromFile(this.files)">
-        <br><br>
         <label for="rom-file">Select a ROM (.gba):</label>
         <input type="file" id="rom-file" accept=".gba" onchange="window.loadRomFromFile(this.files)">
     </div>
@@ -74,4 +71,5 @@
     </script>
 
 </body>
+</html>
 </html>
