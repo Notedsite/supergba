@@ -5,153 +5,202 @@ class GBAJS3_Core {
      * @param {HTMLElement} containerElement - The DOM element to host the emulator.
      */
     constructor(containerElement) {
-        this.container = containerElement; 
+        this.container = containerElement;
         this.paused = true;
         this.romLoaded = false;
-        this.frameCounter = 0; // Used for animation
-        this.scrollOffset = 0; // Used for mock input effect
-        
-        // GBA Key Mappings: Map keyboard codes to GBA buttons
+        this.frameCounter = 0;
+        this.animationFrameId = null;
+
+        // --- 1. GBA Memory Map Setup (Stubs) ---
+        // A. WORK RAM (32-bit access)
+        this.ewram = new Uint8Array(0x40000); // 256KB External Work RAM (Fast)
+        this.iwram = new Uint8Array(0x8000);  // 32KB Internal Work RAM (Faster)
+
+        // B. PPU RAM (Dedicated access)
+        this.vram = new Uint8Array(0x18000); // 96KB Video RAM
+        this.paletteRAM = new Uint8Array(0x400); // 1KB Palette RAM
+        this.oam = new Uint8Array(0x400); // 1KB Object Attribute Memory
+
+        // C. I/O REGISTERS (Controls everything)
+        // We'll use a DataView to handle 16-bit and 32-bit register access easily.
+        this.ioRegs = new ArrayBuffer(0x400); // Mapped at 0x04000000
+        this.ioRegsView = new DataView(this.ioRegs);
+
+        // Define the KEYINPUT register address (relative to IO base 0x04000000)
+        this.KEYINPUT_ADDR = 0x130; // Address 0x4000130
+
+        // --- 2. Input Setup ---
         this.KEY_MAP = {
-            'z': 'A',      // GBA A Button
-            'x': 'B',      // GBA B Button
-            'a': 'L',      // GBA L Shoulder
-            's': 'R',      // GBA R Shoulder
-            'Enter': 'Start',
-            'Shift': 'Select',
-            'ArrowUp': 'Up',
-            'ArrowDown': 'Down',
-            'ArrowLeft': 'Left',
-            'ArrowRight': 'Right'
+            // Note: GBA buttons are active LOW (0 means pressed, 1 means released)
+            'z': 0x0001,      // A (Bit 0)
+            'x': 0x0002,      // B (Bit 1)
+            'Enter': 0x0008,  // Start (Bit 3)
+            'Shift': 0x0004,  // Select (Bit 2)
+            'ArrowRight': 0x0010, // Right (Bit 4)
+            'ArrowLeft': 0x0020,  // Left (Bit 5)
+            'ArrowUp': 0x0040,    // Up (Bit 6)
+            'ArrowDown': 0x0080,  // Down (Bit 7)
+            'a': 0x0100,      // R Shoulder (Bit 8)
+            's': 0x0200       // L Shoulder (Bit 9)
         };
-        this.inputState = {}; // Holds currently pressed GBA buttons
-        
-        // 1. Create the screen/canvas element
+        // Initial state: All keys released (0xFFFF)
+        this.keyInputRegister = 0xFFFF;
+
+
+        // --- 3. Display Setup ---
         this.screen = document.createElement('canvas');
-        this.screen.width = 240; 
+        this.screen.width = 240;
         this.screen.height = 160;
-        
-        // Apply inline styles for consistency with the CSS zoom
-        this.screen.style.width = '240px'; 
-        this.screen.style.height = '160px'; 
-        
-        // 2. Append the canvas to the container
+        this.screen.style.width = '240px';
+        this.screen.style.height = '160px';
+
         this.container.appendChild(this.screen);
-        
-        // 3. Draw a placeholder message on the canvas
-        const ctx = this.screen.getContext('2d');
-        ctx.fillStyle = '#000000';
-        ctx.fillRect(0, 0, 240, 160);
-        
-        ctx.fillStyle = '#FFFFFF';
-        ctx.font = '12px sans-serif';
-        ctx.textAlign = 'center';
-        ctx.fillText('SuperGBA Core Ready', 120, 70);
-        ctx.fillText('Awaiting ROM Data...', 120, 90);
-        
-        console.log('[GBAJS3_Core] Core display created and initialized.', 'success');
-        
+        this.ctx = this.screen.getContext('2d');
+
+        // Create the frame buffer for PPU to draw to (240*160 pixels * 4 bytes/pixel)
+        this.frameBuffer = this.ctx.createImageData(240, 160);
+        this.frameData = this.frameBuffer.data; // A Uint8ClampedArray for easy access
+
+        this.drawPlaceholder();
         this.setupInputHandlers();
+        
+        console.log('[GBAJS3_Core] Core display and memory stubs initialized.');
     }
 
-    // --- Input Handling ---
+    /** Draws the initial black screen and text. */
+    drawPlaceholder() {
+        this.ctx.fillStyle = '#000000';
+        this.ctx.fillRect(0, 0, 240, 160);
+        
+        this.ctx.fillStyle = '#FFFFFF';
+        this.ctx.font = '12px sans-serif';
+        this.ctx.textAlign = 'center';
+        this.ctx.fillText('SuperGBA Core Ready', 120, 70);
+        this.ctx.fillText('Awaiting ROM Data...', 120, 90);
+    }
+
+    // ------------------------------------------------------------------
+    // --- Input Handling (Now writes to the I/O Register) ---
+    // ------------------------------------------------------------------
     setupInputHandlers() {
         document.addEventListener('keydown', (e) => this.handleInput(e, true));
         document.addEventListener('keyup', (e) => this.handleInput(e, false));
     }
-    
+
     handleInput(event, isKeyDown) {
-        const gbaKey = this.KEY_MAP[event.key];
-        if (gbaKey) {
-            event.preventDefault(); // Stop scrolling/default browser behavior
-            this.inputState[gbaKey] = isKeyDown;
-            
-            // Mock: Update scrollOffset based on direction keys
+        const keyBit = this.KEY_MAP[event.key];
+        if (keyBit) {
+            event.preventDefault(); // Stop default browser behavior
+
+            // Write the new key state to the I/O register (KEYINPUT)
             if (isKeyDown) {
-                if (gbaKey === 'Left') this.scrollOffset = (this.scrollOffset - 1 + 240) % 240;
-                if (gbaKey === 'Right') this.scrollOffset = (this.scrollOffset + 1) % 240;
+                // Key pressed: Set the corresponding bit to 0 (Active LOW)
+                this.keyInputRegister &= ~keyBit;
+            } else {
+                // Key released: Set the corresponding bit to 1
+                this.keyInputRegister |= keyBit;
             }
+            
+            // Now, write the new state to the emulated I/O register space (Little Endian)
+            // The GBA CPU will read this 16-bit value from 0x4000130
+            this.ioRegsView.setUint16(this.KEYINPUT_ADDR, this.keyInputRegister, true);
+            
+            // Log for debugging
+            // console.log(`[Input] Key ${event.key} ${isKeyDown ? 'pressed' : 'released'}. KEYINPUT: ${this.keyInputRegister.toString(16).padStart(4, '0')}`);
         }
     }
-    
-    // --- Game Loop ---
+
+    // ------------------------------------------------------------------
+    // --- Game Loop and Execution ---
+    // ------------------------------------------------------------------
     runGameLoop() {
         if (!this.paused && this.romLoaded) {
             this.frameCounter++;
+            
+            // === STUB: Run CPU cycles for one frame (e.g., ~16.7ms or ~280,000 cycles)
+            // this.cpu.runCycles(280896); 
+            
             this.renderScreen();
         }
-        // Use requestAnimationFrame for smooth, browser-friendly animation
         this.animationFrameId = requestAnimationFrame(() => this.runGameLoop());
     }
 
+    // ------------------------------------------------------------------
+    // --- Rendering Logic (PPU Stub) ---
+    // ------------------------------------------------------------------
     renderScreen() {
-        if (!this.screen || !this.romData) return;
+        // This is a minimal stub to show interaction with the new frame buffer
         
-        const ctx = this.screen.getContext('2d');
-        const dataView = new DataView(this.romData);
-        const bytesToRead = Math.min(240 * 160, this.romData.byteLength); // Max bytes for screen
+        // 1. PPU Logic STUB: Simulate rendering a frame by drawing a simple pattern
+        const frameData = this.frameData;
+        const width = 240;
+        const height = 160;
         
-        // Clear screen and set background
-        ctx.clearRect(0, 0, 240, 160);
-        ctx.fillStyle = '#101010'; 
-        ctx.fillRect(0, 0, 240, 160);
-        
-        // === ACTUAL MOCK GAME RENDERING LOGIC (Driven by Input and Loop) ===
-        
-        // 1. Draw a scrolling data-driven background
-        for (let y = 0; y < 160; y++) {
-            for (let x = 0; x < 240; x++) {
-                // Calculate index in the ROM data, applying the scroll offset
-                // Wrap the index horizontally
-                const pixelX = (x + this.scrollOffset) % 240;
-                const dataIndex = (y * 240 + pixelX) % bytesToRead; 
+        // Mock rendering based on frame counter (for visualization)
+        for (let y = 0; y < height; y++) {
+            for (let x = 0; x < width; x++) {
+                const i = (y * width + x) * 4;
                 
-                // Read three bytes to generate RGB color (Mock PPU/Tile data)
-                const r = dataView.getUint8(dataIndex % this.romData.byteLength);
-                const g = dataView.getUint8((dataIndex + 1) % this.romData.byteLength);
-                const b = dataView.getUint8((dataIndex + 2) % this.romData.byteLength);
-                
-                ctx.fillStyle = `rgb(${r}, ${g}, ${b})`;
-                ctx.fillRect(x, y, 1, 1);
+                // Color logic: R based on x, G based on y, B based on time/frame count
+                frameData[i] = (x + this.frameCounter) & 0xFF;     // R
+                frameData[i + 1] = (y + this.frameCounter) & 0xFF; // G
+                frameData[i + 2] = 0xAA;                           // B (constant)
+                frameData[i + 3] = 0xFF;                           // Alpha (opaque)
             }
         }
         
-        // 2. Draw mock 'Player' controlled by Up/Down
-        const playerY = 80 + (this.inputState['Up'] ? -10 : 0) + (this.inputState['Down'] ? 10 : 0);
-        ctx.fillStyle = this.inputState['A'] ? '#FF0000' : '#00FF00'; // Red if A is pressed, Green otherwise
-        ctx.fillRect(100, playerY, 40, 40);
+        // 2. Mock Input Display (Read from the I/O Register)
+        // Convert the register value back to a list of active keys
+        let pressedKeys = [];
+        for (const [key, bit] of Object.entries(this.KEY_MAP)) {
+            // Check if the bit is 0 (Active LOW = pressed)
+            if (!(this.keyInputRegister & bit)) { 
+                pressedKeys.push(key);
+            }
+        }
+        
+        // 3. Transfer to Canvas (Efficiently)
+        this.ctx.putImageData(this.frameBuffer, 0, 0);
 
-        // 3. Draw input status overlay
-        ctx.fillStyle = '#FFFFFF';
-        ctx.font = '10px monospace';
-        ctx.textAlign = 'left';
-        ctx.fillText(`Frame: ${this.frameCounter}`, 5, 10);
-        ctx.fillText(`Scroll: ${this.scrollOffset}`, 5, 20);
-        ctx.fillText(`Input: ${Object.keys(this.inputState).filter(k => this.inputState[k]).join(', ') || 'None'}`, 5, 155);
+        // 4. Draw overlay (since putImageData clears the canvas)
+        this.ctx.fillStyle = '#FFFFFF';
+        this.ctx.font = '10px monospace';
+        this.ctx.textAlign = 'left';
+        this.ctx.fillText(`Frame: ${this.frameCounter}`, 5, 10);
+        this.ctx.fillText(`KEYINPUT Reg: ${this.keyInputRegister.toString(16).padStart(4, '0')}`, 5, 20);
+        this.ctx.fillText(`Input: ${pressedKeys.join(', ') || 'None'}`, 5, 155);
     }
     
+    // ------------------------------------------------------------------
     // --- ROM Loading ---
+    // ------------------------------------------------------------------
     loadRom(romData) {
         if (!romData || romData.byteLength === 0) {
-            console.error('[GBAJS3_Core] Cannot load empty ROM data.', 'error');
+            console.error('[GBAJS3_Core] Cannot load empty ROM data.');
             throw new Error("Empty ROM data provided.");
         }
 
-        this.romData = romData;
+        // STUB: For a real emulator, you would copy this data into the 
+        // emulated Game Pak ROM region (starting at 0x08000000).
+        this.romData = new Uint8Array(romData); // Keep the ROM data accessible for now
+        
         this.romLoaded = true;
         this.paused = false;
         this.frameCounter = 0; // Reset state
-        this.scrollOffset = 0; // Reset state
-        this.inputState = {}; // Clear input state
         
+        // Clear KEYINPUT register (all keys released by default)
+        this.keyInputRegister = 0xFFFF;
+        this.ioRegsView.setUint16(this.KEYINPUT_ADDR, this.keyInputRegister, true);
+
+
         // Start the continuous game loop only once
         if (!this.animationFrameId) {
             this.runGameLoop();
         }
 
-        console.log(`[GBAJS3_Core] Loaded ROM data (${romData.byteLength} bytes). Game loop started.`, 'success');
+        console.log(`[GBAJS3_Core] Loaded ROM data (${romData.byteLength} bytes). Game loop started.`);
     }
-    
+
     pause() {
         this.paused = true;
         console.log('[GBAJS3_Core] Paused.');
