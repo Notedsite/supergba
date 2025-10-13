@@ -101,7 +101,7 @@ function verifyRom(romData) {
     return true;
 }
 
-// --- NEW: Game Title Extraction ---
+// --- Game Title Extraction ---
 /**
  * Reads the game title from the ROM header (offset 0xA0).
  * @param {ArrayBuffer} romData - The binary data of the ROM.
@@ -179,7 +179,7 @@ function loadRomDataIntoEmulator(romData, fileName) {
         return;
     }
 
-    // --- UPDATED: Extract and log the game title ---
+    // --- Extract and log the game title ---
     const gameTitle = getGameTitle(romData);
     console.log(`[Emulator Core] Starting game: ${gameTitle}`); 
     
