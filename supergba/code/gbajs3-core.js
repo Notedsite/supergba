@@ -6,7 +6,7 @@ const ARM_MODE = 0b10000; // User mode (for now)
 const FLAG_N = 0x80000000; // Negative flag (Bit 31)
 const FLAG_Z = 0x40000000; // Zero flag (Bit 30)
 
-// === GBA Input Key Map (CRITICAL FIX: Was missing/causing errors) ===
+// === GBA Input Key Map ===
 const KEY_MAP = {
     'z': 0x0001,         // A button
     'x': 0x0002,         // B button
@@ -21,9 +21,9 @@ const KEY_MAP = {
 };
 
 
-// === MemoryBus (Unchanged, but crucial for 32-bit fetch) ===
+// === MemoryBus (UPDATED to handle BIOS reads) ===
 class MemoryBus {
-    constructor(ewram, iwram, vram, paletteRAM, oam, ioRegsView, romData) {
+    constructor(ewram, iwram, vram, paletteRAM, oam, ioRegsView, romData, biosData) {
         this.ewram = ewram;
         this.iwram = iwram;
         this.vram = vram;
@@ -31,19 +31,33 @@ class MemoryBus {
         this.oam = oam;
         this.ioRegsView = ioRegsView;
         this.romData = romData;
+        this.biosData = biosData; // NEW: Store BIOS ArrayBuffer
     }
 
     read32(address) {
+        // 1. BIOS Region (0x00000000 - 0x00003FFF)
+        if (address < 0x00004000 && this.biosData) {
+            const biosView = new DataView(this.biosData);
+            try {
+                return biosView.getUint32(address, true); // Little Endian
+            } catch (e) {
+                return 0x0; 
+            }
+        }
+        
+        // 2. ROM Region (0x08000000 onwards)
         if (address >= 0x08000000 && this.romData) {
             const romBase = 0x08000000;
             const offset = (address - romBase) % this.romData.byteLength;
             const romView = new DataView(this.romData.buffer);
             try {
-                return romView.getUint32(offset, true); // Little Endian
+                return romView.getUint32(offset, true); 
             } catch (e) {
                 return 0xDEADBEEF; 
             }
         }
+        
+        // Default (other memory regions)
         return 0x0; 
     }
 }
@@ -56,9 +70,10 @@ class GBA_CPU {
         this.registers = new Uint32Array(16);
         this.CPSR = 0x00000010 | ARM_MODE; 
         
-        this.registers[REG_PC] = 0x08000008; 
+        // PC starts at 0x00000000 (BIOS entry)
+        this.registers[REG_PC] = 0x00000000; 
         
-        console.log('[GBA_CPU] Initialized. PC set to 0x08000008 (ROM Start + 8).');
+        console.log('[GBA_CPU] Initialized. PC set to 0x00000000 (BIOS Start).');
     }
 
     setZNFlags(result) {
@@ -76,6 +91,7 @@ class GBA_CPU {
     }
 
     executeNextInstruction() {
+        // PC is already 8 bytes ahead of the instruction being fetched/executed
         const currentPC = this.registers[REG_PC];
         
         // 1. Fetch: Instruction is located at PC - 8
@@ -97,6 +113,7 @@ class GBA_CPU {
             if (isBranch) {
                 // === Instruction: B (Branch) ===
                 let offset = (instruction & 0x00FFFFFF) << 2; 
+                // Sign-extension for the 24-bit offset
                 if (offset & 0x02000000) {
                     offset |= 0xFC000000; 
                 }
@@ -118,7 +135,7 @@ class GBA_CPU {
                         const Rm = instruction & 0xF;
                         let value = this.registers[Rm];
                         
-                        // R15 as source register (R15 reads as instruction address + 8)
+                        // R15 as source register reads as instruction address + 8
                         if (Rm === REG_PC) { 
                             value = instructionAddress + 8;
                         }
@@ -138,15 +155,16 @@ class GBA_CPU {
 }
 
 
-// === GBAJS3_Core (Updated loadRom) ===
+// === GBAJS3_Core ===
 class GBAJS3_Core {
-    constructor(containerElement) {
+    constructor(containerElement, biosData) {
         this.container = containerElement;
         this.paused = true;
         this.romLoaded = false;
         this.frameCounter = 0;
         this.animationFrameId = null;
 
+        // Memory Stubs
         this.ewram = new Uint8Array(0x40000); 
         this.iwram = new Uint8Array(0x8000);  
         this.vram = new Uint8Array(0x18000); 
@@ -158,12 +176,14 @@ class GBAJS3_Core {
         this.keyInputRegister = 0xFFFF;
         this.KEY_MAP = KEY_MAP; 
 
+        // Initialize Bus and CPU (pass BIOS data)
         this.bus = new MemoryBus(
             this.ewram, this.iwram, this.vram, this.paletteRAM, 
-            this.oam, this.ioRegsView, null
+            this.oam, this.ioRegsView, null, biosData
         );
         this.cpu = new GBA_CPU(this.bus);
 
+        // Display Setup
         this.screen = document.createElement('canvas');
         this.screen.width = 240;
         this.screen.height = 160;
@@ -176,18 +196,16 @@ class GBAJS3_Core {
         this.frameData = this.frameBuffer.data; 
 
         this.drawPlaceholder();
-        // The call that previously failed now runs
-        this.setupInputHandlers(); 
+        this.setupInputHandlers(); // FIXED: Method is now correctly defined
         
         console.log('[GBAJS3_Core] Core display, memory, bus, and CPU interpreter initialized.');
     }
     
-    // <<< --- CRITICAL FIX: The missing method definition is added here --- >>>
+    // CRITICAL FIX: Missing method definition
     setupInputHandlers() {
         document.addEventListener('keydown', (e) => this.handleInput(e, true));
         document.addEventListener('keyup', (e) => this.handleInput(e, false));
     }
-    // <<< --------------------------------------------------------------- >>>
 
 
     drawPlaceholder() {
@@ -218,6 +236,7 @@ class GBAJS3_Core {
         if (!this.paused && this.romLoaded) {
             this.frameCounter++;
             
+            // Execute one instruction per frame (simple time slice)
             this.cpu.runCycles(1); 
             
             this.renderScreen();
@@ -230,6 +249,7 @@ class GBAJS3_Core {
         const width = 240;
         const height = 160;
         
+        // Dynamic rendering based on R0 and frame count
         let romPointer = this.cpu.registers[0]; 
         const frameColorShift = (this.frameCounter * 5) % 256; 
         
@@ -240,11 +260,11 @@ class GBAJS3_Core {
             for (let x = 0; x < width; x++) {
                 const i = (y * width + x) * 4;
                 
-                // Color generated using coordinates, frame count, and R0 (CPU status)
                 let r = (x + frameColorShift) % 256;
                 let g = (y + frameColorShift / 2) % 256;
                 let b = (romPointer + x + y) % 256; 
 
+                // Input visualization
                 if (aButtonPressed) {
                     r = Math.min(255, r + 100);
                     g = Math.max(0, g - 100);
@@ -260,7 +280,7 @@ class GBAJS3_Core {
 
         this.ctx.putImageData(this.frameBuffer, 0, 0);
 
-        // Draw overlay (Input status & CPU status)
+        // Draw overlay
         let pressedKeys = [];
         for (const [key, bit] of Object.entries(this.KEY_MAP)) {
             if (!(this.keyInputRegister & bit)) { 
@@ -293,9 +313,8 @@ class GBAJS3_Core {
         this.keyInputRegister = 0xFFFF;
         this.ioRegsView.setUint16(this.KEYINPUT_ADDR, this.keyInputRegister, true);
 
-        this.cpu.registers.fill(0);
-        this.cpu.CPSR = 0x00000010 | ARM_MODE;
-        this.cpu.registers[REG_PC] = 0x08000008; 
+        // CPU Registers remain as set by the BIOS (or reset to 0/0x00000000 if not done manually)
+        // We only reset the core state, not the CPU registers after the BIOS has initialized.
 
         if (!this.animationFrameId) {
             this.runGameLoop();
