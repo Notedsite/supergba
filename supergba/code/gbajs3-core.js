@@ -70,6 +70,7 @@ class GBA_CPU {
         this.registers = new Uint32Array(16);
         this.CPSR = 0x00000010 | ARM_MODE; 
         
+        // PC starts at 0x00000000 (BIOS entry)
         this.registers[REG_PC] = 0x00000000; 
         
         console.log('[GBA_CPU] Initialized. PC set to 0x00000000 (BIOS Start).');
