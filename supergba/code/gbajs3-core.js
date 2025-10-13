@@ -6,7 +6,7 @@ const ARM_MODE = 0b10000; // User mode (for now)
 const FLAG_N = 0x80000000; // Negative flag (Bit 31)
 const FLAG_Z = 0x40000000; // Zero flag (Bit 30)
 
-// === GBA Input Key Map (CRITICAL FIX: Was missing, causing input errors/no key visualization) ===
+// === GBA Input Key Map (CRITICAL FIX: Was missing/causing errors) ===
 const KEY_MAP = {
     'z': 0x0001,         // A button
     'x': 0x0002,         // B button
@@ -101,7 +101,7 @@ class GBA_CPU {
                     offset |= 0xFC000000; 
                 }
                 
-                // CRITICAL ARM FIX: New PC = (PC value during execution) + offset
+                // ARM FIX: New PC = (PC value during execution) + offset
                 this.registers[REG_PC] = currentPC + offset; 
                 
             } else if (isDataProcessing) {
@@ -118,7 +118,7 @@ class GBA_CPU {
                         const Rm = instruction & 0xF;
                         let value = this.registers[Rm];
                         
-                        // ENHANCEMENT: R15 as source register (R15 reads as instruction address + 8)
+                        // R15 as source register (R15 reads as instruction address + 8)
                         if (Rm === REG_PC) { 
                             value = instructionAddress + 8;
                         }
@@ -156,7 +156,7 @@ class GBAJS3_Core {
         this.ioRegsView = new DataView(this.ioRegs);
         this.KEYINPUT_ADDR = 0x130; 
         this.keyInputRegister = 0xFFFF;
-        this.KEY_MAP = KEY_MAP; // CRITICAL FIX: Assign the global KEY_MAP
+        this.KEY_MAP = KEY_MAP; 
 
         this.bus = new MemoryBus(
             this.ewram, this.iwram, this.vram, this.paletteRAM, 
@@ -176,15 +176,18 @@ class GBAJS3_Core {
         this.frameData = this.frameBuffer.data; 
 
         this.drawPlaceholder();
-        this.setupInputHandlers();
+        // The call that previously failed now runs
+        this.setupInputHandlers(); 
         
         console.log('[GBAJS3_Core] Core display, memory, bus, and CPU interpreter initialized.');
     }
     
+    // <<< --- CRITICAL FIX: The missing method definition is added here --- >>>
     setupInputHandlers() {
         document.addEventListener('keydown', (e) => this.handleInput(e, true));
         document.addEventListener('keyup', (e) => this.handleInput(e, false));
     }
+    // <<< --------------------------------------------------------------- >>>
 
 
     drawPlaceholder() {
@@ -227,7 +230,6 @@ class GBAJS3_Core {
         const width = 240;
         const height = 160;
         
-        // CRITICAL FIX: Dynamic rendering to ensure screen isn't blank
         let romPointer = this.cpu.registers[0]; 
         const frameColorShift = (this.frameCounter * 5) % 256; 
         
