@@ -133,7 +133,7 @@ function getGameTitle(romData) {
 }
 
 
-// --- ROM Loading and Core Execution (Updated) ---
+// --- ROM Loading and Core Execution (Corrected) ---
 
 window.loadRomFromFile = function(files) {
     if (files.length === 0) return;
@@ -186,8 +186,11 @@ function loadRomDataIntoEmulator(romData, fileName) {
     const container = document.getElementById(CONFIG.EMULATOR_ID);
     let statusEl = document.getElementById(CONFIG.STATUS_ID);
     
-    // CRITICAL: GBAJS3_Core must be defined globally before this is run.
+    // CRITICAL FIX: Instantiate the core emulator instance
     if (!window.gbaEmulatorInstance && typeof GBAJS3_Core !== 'undefined') {
+        // 1. Clear the container's old text right before adding the canvas
+        container.innerHTML = ''; 
+        
         window.gbaEmulatorInstance = new GBAJS3_Core(container, window.gbaBiosData); 
         console.log('[Emulator Core] New emulator instance created with BIOS data.');
     }
@@ -197,7 +200,6 @@ function loadRomDataIntoEmulator(romData, fileName) {
             window.gbaEmulatorInstance.loadRom(romData); 
             
             statusEl.className = 'success';
-            // Use gameTitle in status update
             statusEl.innerHTML = `Successfully loaded and started: <strong>${gameTitle}</strong> (File: ${fileName})`;
         } catch (e) {
             console.error(`[Emulator Core] Error during ROM loading or starting: ${e.message}`, 'error');
@@ -207,7 +209,7 @@ function loadRomDataIntoEmulator(romData, fileName) {
     } 
 }
 
-// --- Main Execution Flow (Async) ---
+// --- Main Execution Flow ---
 async function startBootstrap() {
     console.log('[Bootstrap] Starting client-side bootstrap...');
     
@@ -221,7 +223,6 @@ async function startBootstrap() {
         container.insertAdjacentElement('afterend', statusEl);
     }
     
-    // Attempt to load the BIOS asynchronously and wait
     const biosLoaded = await loadHardcodedBios();
 
     if (!biosLoaded) {
@@ -233,7 +234,7 @@ async function startBootstrap() {
     statusEl.className = '';
     statusEl.innerHTML = '<h2>Emulator Ready</h2><p>BIOS loaded. Please use the file input to load the **ROM (.gba)**.</p>';
     
-    //container.innerHTML = ''; 
+    // Note: The container.innerHTML clearance is now handled inside loadRomDataIntoEmulator
     
     console.log('[Bootstrap] Bootstrap process complete. Waiting for ROM...', 'success');
 }
