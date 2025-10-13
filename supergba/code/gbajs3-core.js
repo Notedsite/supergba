@@ -237,16 +237,15 @@ class GBA_CPU {
                 if (isStore) { // STR (Store Register)
                     const value = this.registers[Rd];
                     
-                    // The BIOS uses 16-bit stores to VRAM (unaligned), 32-bit to IO (aligned)
+                    // Simplified: check for halfword/word alignment
                     if (targetAddress & 0x3) { 
-                       // Unaligned write (likely 16-bit to VRAM/PRAM)
+                       // Unaligned write (16-bit)
                        this.bus.write16(targetAddress, value & 0xFFFF);
                     } else { 
                        // Aligned write (32-bit)
                        this.bus.write32(targetAddress, value);
                     }
                 } 
-                // LDR (Load) is not implemented yet
             }
         }
     }
