@@ -5,13 +5,27 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>GBA Emulator Bootstrap - GitHub Pages</title>
     <style>
-        body { font-family: sans-serif; max-width: 800px; margin: 40px auto; line-height: 1.6; }
-        #console-output { border: 1px solid #ccc; padding: 15px; background: #f9f9f9; min-height: 150px; white-space: pre-wrap; margin-top: 10px; }
-        .success { color: green; font-weight: bold; }
-        .error { color: red; font-weight: bold; }
-        #rom-loader-area { margin-bottom: 20px; padding: 10px; border: 1px dashed #ddd; }
-        #gbajs-container { min-height: 160px; margin-bottom: 20px; }
-    </style>
+    body { font-family: sans-serif; max-width: 800px; margin: 40px auto; line-height: 1.6; }
+    #console-output { border: 1px solid #ccc; padding: 15px; background: #f9f9f9; min-height: 150px; white-space: pre-wrap; margin-top: 10px; }
+    .success { color: green; font-weight: bold; }
+    .error { color: red; font-weight: bold; }
+    #rom-loader-area { margin-bottom: 20px; padding: 10px; border: 1px dashed #ddd; }
+    
+    /* === FIX: Ensure the emulator container is ready and centered === */
+    #gbajs-container { 
+        min-height: 200px; 
+        margin-bottom: 20px;
+        display: flex; /* Enable flexbox for centering */
+        justify-content: center; /* Center horizontally */
+        align-items: center; /* Center vertically */
+    }
+    #gbajs-container canvas {
+        /* Optional: Add a subtle shadow or zoom */
+        box-shadow: 0 4px 8px rgba(0,0,0,0.2);
+        transform: scale(2); /* Magnify the small GBA screen */
+        image-rendering: pixelated; /* Keep the classic pixel look */
+    }
+</style>
 </head>
 <body>
 
