@@ -186,7 +186,8 @@ function loadRomDataIntoEmulator(romData, fileName) {
     const container = document.getElementById(CONFIG.EMULATOR_ID);
     let statusEl = document.getElementById(CONFIG.STATUS_ID);
     
-    if (!window.gbaEmulatorInstance) {
+    // CRITICAL: GBAJS3_Core must be defined globally before this is run.
+    if (!window.gbaEmulatorInstance && typeof GBAJS3_Core !== 'undefined') {
         window.gbaEmulatorInstance = new GBAJS3_Core(container, window.gbaBiosData); 
         console.log('[Emulator Core] New emulator instance created with BIOS data.');
     }
