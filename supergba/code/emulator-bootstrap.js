@@ -1,7 +1,6 @@
 /**
  * EMULATOR BOOTSTRAP for GitHub Pages (Control Flow)
  * This script handles asynchronous BIOS loading, ROM verification, and core startup.
- * V6.2
  */
 
 const CONFIG = {
@@ -89,7 +88,7 @@ function verifyRom(romData) {
         checkSum = (checkSum + romView[i]) & 0xFF;
     }
     
-    // Calculated Complement based on checksum formula (Sum(0xA0..0xBC) + 0xBD byte + 0x19 should be 0 mod 256)
+    // Checksum formula: Sum(0xA0..0xBC) + 0xBD byte + 0x19 should be 0 mod 256
     const calculatedComplement = (0x100 - checkSum - 0x19) & 0xFF;
     const expectedComplement = romView[0xBD];
 
@@ -102,8 +101,39 @@ function verifyRom(romData) {
     return true;
 }
 
+// --- NEW: Game Title Extraction ---
+/**
+ * Reads the game title from the ROM header (offset 0xA0).
+ * @param {ArrayBuffer} romData - The binary data of the ROM.
+ * @returns {string} The game title.
+ */
+function getGameTitle(romData) {
+    const romView = new Uint8Array(romData);
+    const TITLE_OFFSET = 0xA0;
+    const TITLE_LENGTH = 12;
+    let title = '';
 
-// --- ROM Loading and Core Execution ---
+    if (romData.byteLength < TITLE_OFFSET + TITLE_LENGTH) {
+        return "Unknown Title (Header too short)";
+    }
+
+    for (let i = 0; i < TITLE_LENGTH; i++) {
+        const byte = romView[TITLE_OFFSET + i];
+        
+        // Stop at the null terminator (0x00)
+        if (byte === 0x00) {
+            break;
+        }
+        
+        // Convert ASCII byte to character
+        title += String.fromCharCode(byte);
+    }
+    
+    return title.trim();
+}
+
+
+// --- ROM Loading and Core Execution (Updated) ---
 
 window.loadRomFromFile = function(files) {
     if (files.length === 0) return;
@@ -142,7 +172,6 @@ window.loadRomFromFile = function(files) {
 
 
 function loadRomDataIntoEmulator(romData, fileName) {
-    console.log(`[Emulator Core] Preparing to load ROM data for ${fileName}...`);
     
     if (!window.gbaBiosData) {
         console.error('[Emulator Core] BIOS not loaded. Cannot proceed.', 'error');
@@ -150,6 +179,10 @@ function loadRomDataIntoEmulator(romData, fileName) {
         return;
     }
 
+    // --- UPDATED: Extract and log the game title ---
+    const gameTitle = getGameTitle(romData);
+    console.log(`[Emulator Core] Starting game: ${gameTitle}`); 
+    
     const container = document.getElementById(CONFIG.EMULATOR_ID);
     let statusEl = document.getElementById(CONFIG.STATUS_ID);
     
@@ -163,7 +196,8 @@ function loadRomDataIntoEmulator(romData, fileName) {
             window.gbaEmulatorInstance.loadRom(romData); 
             
             statusEl.className = 'success';
-            statusEl.innerHTML = `Successfully loaded and started: <strong>${fileName}</strong>`;
+            // Use gameTitle in status update
+            statusEl.innerHTML = `Successfully loaded and started: <strong>${gameTitle}</strong> (File: ${fileName})`;
         } catch (e) {
             console.error(`[Emulator Core] Error during ROM loading or starting: ${e.message}`, 'error');
             statusEl.className = 'error';
