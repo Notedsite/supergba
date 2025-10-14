@@ -412,3 +412,25 @@ class GBAJS3_Core {
         requestAnimationFrame(() => this.runGameLoop()); 
     }
 }
+
+setVideoMode(mode) {
+    // DISPCNT is at address 0x04000000 + REG_DISPCNT (0x000)
+    const DISPCNT_ADDRESS = 0x04000000 + REG_DISPCNT;
+    
+    // Read the current DISPCNT to preserve other settings (like Force Blank, BG flags)
+    let currentValue = this.bus.read16(DISPCNT_ADDRESS);
+    
+    // Clear the current mode bits (Bits 0-2)
+    currentValue &= ~0x0007; 
+    
+    // Set the new mode (e.g., Mode 3)
+    currentValue |= (mode & 0x7);
+    
+    // Mode 3 setup often includes enabling BG2 (Bit 10)
+    if (mode === 3) {
+        currentValue |= (1 << 10);
+    }
+    
+    this.bus.write16(DISPCNT_ADDRESS, currentValue);
+    console.log(`[Test] DISPCNT set to Mode ${mode}. Value: 0x${currentValue.toString(16).padStart(4, '0')}`, 'success');
+}
