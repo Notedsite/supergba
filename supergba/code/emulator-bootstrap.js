@@ -179,6 +179,8 @@ function loadRomDataIntoEmulator(romData, fileName) {
         return;
     }
 
+    window.gbaEmulatorInstance.setVideoMode(3); 
+    
     // --- Extract and log the game title ---
     const gameTitle = getGameTitle(romData);
     console.log(`[Emulator Core] Starting game: ${gameTitle}`); 
