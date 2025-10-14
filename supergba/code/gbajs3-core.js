@@ -170,10 +170,10 @@ class GBA_CPU {
     constructor(bus) {
         this.bus = bus;
         this.registers = new Uint32Array(16);
-        // SVC mode Stack Pointer (R13) is used immediately by the BIOS.
-        // We set R13 to a safe address near the top of IWRAM (0x03008000).
-        this.registers[13] = 0x03007F00; // <- CRITICAL STACK POINTER INIT
-
+        
+        // CRITICAL FIX: Initialize SVC Stack Pointer (R13) to a safe IWRAM address
+        this.registers[13] = 0x03007F00; 
+        
         this.CPSR = 0x00000010 | ARM_MODE; 
         
         this.registers[REG_PC] = 0x00000000; 
@@ -191,7 +191,7 @@ class GBA_CPU {
         }
     }
     
-    // NEW: SWI Handler (CpuSet is essential for logo data copy)
+    // SWI Handler (CpuSet is essential for logo data copy)
     handleSWI(swiNumber) {
         if (swiNumber === 0x0C) { // SWI 0x0C: CpuSet (Fill or Copy memory)
             
@@ -202,9 +202,9 @@ class GBA_CPU {
             // R2: Control Word
             const control = this.registers[2]; 
             
-            const mode16Bit = (control >> 25) & 0x1; // 0=16-bit (2-byte), 1=32-bit (4-byte)
-            const isFill = (control >> 24) & 0x1;    // 0=Copy, 1=Fill
-            const count = control & 0xFFFFFF;        // Number of units
+            const mode16Bit = (control >> 25) & 0x1; 
+            const isFill = (control >> 24) & 0x1;    
+            const count = control & 0xFFFFFF;        
             
             if (!isFill) {
                 // Copy operation (CRITICAL: Copies logo and palette)
@@ -444,7 +444,7 @@ class GBA_CPU {
                         }
                     }
                 }
-            } else if (isSWI) { // SWI (Software Interrupt) <--- SWI EXECUTION
+            } else if (isSWI) { // SWI (Software Interrupt)
                 const swiNumber = instruction & 0xFFFFFF; 
                 this.handleSWI(swiNumber);
             }
@@ -576,7 +576,7 @@ class GBAJS3_Core {
             // 4. Set H-Blank flag (Bit 1)
             dispstat |= 0x0002; 
             
-            // 5. VCOUNT Match Check (Simplified: The BIOS waits for VCOUNT 0)
+            // 5. VCOUNT Match Check (The BIOS waits for VCOUNT 0)
             if (this.currentScanline === 0) {
                  dispstat |= 0x0004; 
             }
@@ -592,8 +592,8 @@ class GBAJS3_Core {
         if (!this.paused) {
             this.frameCounter++;
             
-            // Run a high number of cycles per frame
-            const CYCLES_PER_FRAME = 200000; 
+            // CRITICAL FIX: Use the accurate GBA cycles per frame (~16.78MHz / 60)
+            const CYCLES_PER_FRAME = 279620; 
             const cyclesPerStep = 50; 
 
             for (let i = 0; i < CYCLES_PER_FRAME; i += cyclesPerStep) {
@@ -749,7 +749,7 @@ class GBAJS3_Core {
         this.ctx.fillText(`Frame: ${this.frameCounter}`, 5, 10);
         this.ctx.fillText(`PC: 0x${this.cpu.registers[REG_PC].toString(16).padStart(8, '0')}`, 5, 20);
         this.ctx.fillText(`VCOUNT: ${this.currentScanline}`, 5, 30);
-        this.ctx.fillText(`Mode: ${displayMode}`, 5, 40);
+        this.ctx.fillText(`Mode: ${dispcnt & 0x7}`, 5, 40);
         this.ctx.fillText(`Input: ${pressedKeys.join(', ') || 'None'}`, 5, 155);
     }
     
