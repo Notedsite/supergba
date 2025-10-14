@@ -41,6 +41,9 @@
     </div>
 
     <hr>
+    <h3>Dev Tools</h3>
+    <button onclick="testMode3()">Force Mode 3</button> <div id="gbajs-container">
+    <hr>
     <h3>Console Output:</h3>
     <pre id="console-output">Ready to begin checks...</pre>
 
@@ -68,6 +71,19 @@
             outputElement.innerHTML += `<span class="error">[ERROR] ${args.join(' ')}</span>\n`;
             outputElement.scrollTop = outputElement.scrollHeight;
         };
+        function testMode3() {
+        if (window.gbaEmulatorInstance) {
+            window.gbaEmulatorInstance.setVideoMode(3);
+
+            // Also write a single pixel color (BGR 555 format: 0x7FFF = White)
+            // This writes a 16-bit color at the first VRAM location
+            window.gbaEmulatorInstance.bus.write16(0x06000000, 0x7FFF); 
+
+            console.log('[Test] Forced Mode 3 and wrote a white pixel at (0, 0).', 'success');
+        } else {
+            console.error('[Test] Emulator not initialized yet.');
+        }
+    }
     </script>
 
 </body>
