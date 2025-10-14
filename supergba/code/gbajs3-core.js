@@ -204,7 +204,7 @@ class GBA_CPU {
                 this.registers[REG_PC] = currentPC + offset; 
                 
             } else if (isDataProcessing) {
-                // Data Processing Instruction (MOV, AND, ORR, ADD, SUB, etc.)
+                // Data Processing Instruction (MOV, AND, ORR, ADD, SUB, CMP, etc.)
                 const Rd = (instruction >> 12) & 0xF; 
                 const isImmediate = instruction & 0x02000000;
                 
@@ -246,6 +246,12 @@ class GBA_CPU {
                         this.registers[Rd] = result;
                         break;
                         
+                    case 0b1010: // CMP (Compare) <--- NEW: CMP
+                        // CMP is an arithmetic operation (SUB) that only sets flags.
+                        result = (operand1 - operand2) >>> 0; 
+                        // Note: C and V flags logic omitted for simplicity.
+                        break;
+                        
                     case 0b1100: // ORR (Logical OR)
                         result = operand1 | operand2;
                         this.registers[Rd] = result;
@@ -261,10 +267,13 @@ class GBA_CPU {
                         return;
                 }
                 
-                // If S-bit is set, update flags
-                if (instruction & 0x00100000) { 
+                // If S-bit is set, update flags (S-bit is always set for CMP)
+                if (instruction & 0x00100000 || opcode === 0b1010) { 
                     this.setZNFlags(result);
-                    // (C and V flags are omitted for simplicity, but needed for full emulation)
+                }
+                // If the opcode wasn't CMP, write the result back to the register.
+                if (opcode !== 0b1010) {
+                    this.registers[Rd] = result;
                 }
 
             } else if (isBlockDataTransfer) {
@@ -294,7 +303,6 @@ class GBA_CPU {
                     if (P_bit === 1 && U_bit === 0) { 
                         currentAddress = baseAddress - (numRegisters * 4);
                     } 
-                    // Other modes (like STMIA/Full Ascending) would start at baseAddress.
 
                     let bytesWritten = 0;
                     for (let i = 0; i < 16; i++) {
@@ -311,7 +319,7 @@ class GBA_CPU {
                         }
                     }
 
-                    // Write-back the new base address (SP = SP - (NumRegs * 4))
+                    // Write-back the new base address
                     if (W_bit) {
                         this.registers[Rn] = currentAddress;
                     }
@@ -488,7 +496,6 @@ class GBAJS3_Core {
             }
             
             // 4. Set H-Blank flag (Bit 1) for a portion of the line (Simplified)
-            // H-Blank lasts from line 0 to 159, and is always set during V-Blank.
             dispstat |= 0x0002; 
             
             // 5. Update VCOUNT register (Current Scanline)
@@ -613,8 +620,8 @@ class GBAJS3_Core {
                 }
             }
         } else if (displayMode === 0 && bg0Enabled) {
-            // Mode 0: Tiled Background Rendering (Simple BG0)
-            // (Tiled rendering logic remains here for future use)
+            // Mode 0: Tiled Background Rendering 
+            
             const bg0cnt = this.ioRegsView.getUint16(this.REG_BG0CNT, true);
             
             const tileBaseIndex = (bg0cnt >> 2) & 0x3;
