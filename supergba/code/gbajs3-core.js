@@ -105,6 +105,7 @@ class MemoryBus {
         // 3. IO Register Write (0x04000000 - 0x04000400)
         if (address >= 0x04000000 && address < 0x04000400) {
             const offset = address - 0x04000000;
+            // CRITICAL: Ensure setUint16 is used for 16-bit registers (like DISPCNT)
             this.ioRegsView.setUint16(offset, value, true);
             return;
         }
@@ -171,13 +172,8 @@ class GBA_CPU {
         this.bus = bus;
         this.registers = new Uint32Array(16);
         
-        // CRITICAL FIX: Initialize R13 for all key modes used by BIOS
-        // The BIOS relies on the R13 register to be a valid stack pointer.
-        this.registers[13] = 0x03007F00; // R13_USR/SYS (Index 13)
-        
-        // We do not manage banked registers yet, but we define SVC and IRQ stacks for completeness
-        this.R13_SVC = 0x03007F00;
-        this.R13_IRQ = 0x03007FC0;
+        // CRITICAL FIX: Initialize R13 (Stack Pointer) for a valid stack region
+        this.registers[13] = 0x03007F00; // R13_USR/SYS 
         
         this.CPSR = 0x00000010 | ARM_MODE; 
         
@@ -200,11 +196,8 @@ class GBA_CPU {
     handleSWI(swiNumber) {
         if (swiNumber === 0x0C) { // SWI 0x0C: CpuSet (Fill or Copy memory)
             
-            // R0: Source Address
             const src = this.registers[0]; 
-            // R1: Destination Address
             const dst = this.registers[1]; 
-            // R2: Control Word
             const control = this.registers[2]; 
             
             const mode16Bit = (control >> 25) & 0x1; 
@@ -212,19 +205,17 @@ class GBA_CPU {
             const count = control & 0xFFFFFF;        
             
             if (!isFill) {
-                // Copy operation (CRITICAL: Copies logo and palette)
-                
                 let currentSrc = src;
                 let currentDst = dst;
                 
-                if (mode16Bit === 0) { // 16-bit copy (Used for Palette/DMA copy)
+                if (mode16Bit === 0) { // 16-bit copy 
                     for (let i = 0; i < count; i++) {
                         const value = this.bus.read16(currentSrc);
                         this.bus.write16(currentDst, value);
                         currentSrc += 2;
                         currentDst += 2;
                     }
-                } else { // 32-bit copy (Used for Logo Bitmap)
+                } else { // 32-bit copy 
                      for (let i = 0; i < count; i++) {
                         const value = this.bus.read32(currentSrc);
                         this.bus.write32(currentDst, value);
@@ -239,7 +230,7 @@ class GBA_CPU {
     executeNextInstruction() {
         const currentPC = this.registers[REG_PC];
         
-        // The instruction fetched is PC - 8 bytes in ARM state (due to pipelining)
+        // Pipelining: Instruction is fetched at PC - 8
         const instructionAddress = currentPC - 8;
         const instruction = this.bus.read32(instructionAddress);
         
@@ -247,14 +238,8 @@ class GBA_CPU {
         const cond = (instruction >> 28) & 0xF; 
         const isBranch = ((instruction >> 25) & 0b111) === 0b101;
         const isDataProcessing = (instruction >> 26) === 0b00; 
-        
-        // Block Data Transfer (STM/LDM)
         const isBlockDataTransfer = ((instruction >> 25) & 0b111) === 0b100;
-        
-        // Load/Store Register (LDR/STR)
         const isLoadStore = (instruction >> 26) === 0b01; 
-        
-        // SWI Check
         const isSWI = ((instruction >> 24) & 0b1111) === 0b1111; 
 
         // Increment PC before execution
@@ -278,13 +263,10 @@ class GBA_CPU {
                 const Rd = (instruction >> 12) & 0xF; 
                 const isImmediate = instruction & 0x02000000;
                 
-                // Read Rn (first operand)
                 const RnIndex = (instruction >> 16) & 0xF;
                 let operand1 = this.registers[RnIndex]; 
-                
                 let operand2;
                 
-                // Determine Operand 2 (Immediate or Register)
                 if (isImmediate) {
                     operand2 = instruction & 0xFF; 
                 } else {
@@ -300,42 +282,30 @@ class GBA_CPU {
 
                 switch (opcode) {
                     case 0b0000: // AND 
-                        result = operand1 & operand2;
-                        this.registers[Rd] = result;
-                        break;
-                        
                     case 0b0010: // SUB 
-                        result = (operand1 - operand2) >>> 0; 
-                        break;
-                        
                     case 0b0100: // ADD 
-                        result = (operand1 + operand2) >>> 0; 
-                        break;
-                        
-                    case 0b1010: // CMP (Compare)
-                        result = (operand1 - operand2) >>> 0; 
-                        break;
-                        
+                    case 0b1010: // CMP 
                     case 0b1100: // ORR 
-                        result = operand1 | operand2;
-                        this.registers[Rd] = result;
-                        break;
+                    case 0b1101: { // MOV 
+                        // Simplified execution for common opcodes
+                        if (opcode === 0b0000) result = operand1 & operand2;
+                        else if (opcode === 0b0010) result = (operand1 - operand2) >>> 0; 
+                        else if (opcode === 0b0100) result = (operand1 + operand2) >>> 0; 
+                        else if (opcode === 0b1010) result = (operand1 - operand2) >>> 0; 
+                        else if (opcode === 0b1100) result = operand1 | operand2;
+                        else if (opcode === 0b1101) result = operand2; 
                         
-                    case 0b1101: // MOV 
-                        result = operand2; 
-                        this.registers[Rd] = result;
+                        if (instruction & 0x00100000 || opcode === 0b1010) { 
+                            this.setZNFlags(result);
+                        }
+                        if (opcode !== 0b1010) {
+                            this.registers[Rd] = result;
+                        }
                         break;
-                        
+                    }
                     default:
-                        return;
-                }
-                
-                // Set flags if S-bit is set or instruction is CMP
-                if (instruction & 0x00100000 || opcode === 0b1010) { 
-                    this.setZNFlags(result);
-                }
-                if (opcode !== 0b1010) {
-                    this.registers[Rd] = result;
+                        // Ignore unsupported DP instructions
+                        break;
                 }
 
             } else if (isBlockDataTransfer) {
@@ -371,7 +341,6 @@ class GBA_CPU {
                         if ((registerList >> i) & 0x1) {
                             let value = this.registers[i];
                             
-                            // CRITICAL: R15 (PC) is stored as PC + 8
                             if (i === REG_PC) {
                                 value = instructionAddress + 8;
                             }
@@ -407,11 +376,11 @@ class GBA_CPU {
                     const targetAddress = baseAddress + offset;
                     
                     if (isLoad) { // LDRH
-                        if (H_code === 0b01) {
+                        if (H_code === 0b01) { // 0b01 = Half-word (16-bit)
                             this.registers[Rd] = this.bus.read16(targetAddress);
                         }
-                    } else { // STRH
-                        if (H_code === 0b01) {
+                    } else { // STRH (The one that sets REG_DISPCNT)
+                        if (H_code === 0b01) { 
                             this.bus.write16(targetAddress, this.registers[Rd] & 0xFFFF);
                         }
                     }
@@ -425,10 +394,8 @@ class GBA_CPU {
                     if (isLoad) { // LDR / LDRB
                         let loadedValue;
                         if (isByte) {
-                            // LDRB (Load Byte)
                             loadedValue = this.bus.read32(targetAddress) & 0xFF; 
                         } else { 
-                            // LDR (32-bit)
                             loadedValue = this.bus.read32(targetAddress);
                         }
                         
@@ -441,10 +408,8 @@ class GBA_CPU {
                     } else { // STR / STRB
                         const value = this.registers[Rd];
                         if (isByte) {
-                            // STRB (Store Byte)
                             this.bus.write8(targetAddress, value & 0xFF); 
                         } else { 
-                            // STR (32-bit)
                             this.bus.write32(targetAddress, value);
                         }
                     }
@@ -485,7 +450,7 @@ class GBAJS3_Core {
         this.REG_VCOUNT = 0x006;   // 0x04000006 (Current Scanline)
         this.REG_BG0CNT = 0x008; 	// 0x04000008 (BG0 Control Register)
 
-        // Initialize IO Registers
+        // Initialize IO Registers to power-on state
         this.ioRegsView.setUint16(this.REG_DISPCNT, 0x0000, true); 
         this.ioRegsView.setUint16(this.REG_DISPSTAT, 0x0000, true); 
         this.ioRegsView.setUint16(this.REG_VCOUNT, 0x0000, true); 
@@ -509,7 +474,7 @@ class GBAJS3_Core {
         this.screen.style.width = '240px';
         this.screen.style.height = '160px';
 
-        this.container.innerHTML = ''; // Clear "Loading core initialization..."
+        this.container.innerHTML = ''; 
         this.container.appendChild(this.screen);
         this.ctx = this.screen.getContext('2d');
         this.frameBuffer = this.ctx.createImageData(240, 160);
@@ -581,7 +546,7 @@ class GBAJS3_Core {
             // 4. Set H-Blank flag (Bit 1)
             dispstat |= 0x0002; 
             
-            // 5. VCOUNT Match Check (The BIOS waits for VCOUNT 0)
+            // 5. VCOUNT Match Check 
             if (this.currentScanline === 0) {
                  dispstat |= 0x0004; 
             }
@@ -597,17 +562,16 @@ class GBAJS3_Core {
         if (!this.paused) {
             this.frameCounter++;
             
-            // Use the accurate GBA cycles per frame (~16.78MHz / 60)
+            // Accurate GBA cycles per frame 
             const CYCLES_PER_FRAME = 279620; 
             const cyclesPerStep = 50; 
 
             for (let i = 0; i < CYCLES_PER_FRAME; i += cyclesPerStep) {
-                // Execute CPU instructions (Roughly 4 cycles per instruction)
+                // Interleave CPU and PPU execution
                 for(let j = 0; j < cyclesPerStep / 4; j++) { 
                     this.cpu.executeNextInstruction(); 
                 }
                 
-                // Update PPU timing after each batch of execution
                 this.updatePPU(cyclesPerStep);
             }
         }
@@ -619,7 +583,6 @@ class GBAJS3_Core {
         
         const tileDataOffset = tileBase + tileNum * 32; 
         const vramView = new DataView(this.vram.buffer);
-
         const paletteView = new DataView(this.paletteRAM.buffer);
         const paletteBaseOffset = paletteBank * 32; 
 
@@ -672,8 +635,7 @@ class GBAJS3_Core {
         const dispcnt = this.ioRegsView.getUint16(this.REG_DISPCNT, true);
         const dispstat = this.ioRegsView.getUint16(this.REG_DISPSTAT, true);
         const displayMode = dispcnt & 0x7; 
-        const bg0Enabled = (dispcnt >> 8) & 0x1; 
-        const bg2Enabled = (dispcnt >> 10) & 0x1; // Critical for Mode 3
+        const bg2Enabled = (dispcnt >> 10) & 0x1; 
 
         const vramView = new DataView(this.vram.buffer);
         
@@ -687,9 +649,8 @@ class GBAJS3_Core {
 
         // --- PPU LOGIC BRANCH ---
         
-        // Mode 3 is used for the BIOS Logo, and requires BG2 to be enabled (set by the BIOS)
+        // Mode 3 (Bitmap Mode) is used for the BIOS Logo and requires BG2 to be enabled.
         if (displayMode === 3 && bg2Enabled) { 
-            // Mode 3: 240x160, 16-bit color bitmap (Used by BIOS logo)
             for (let y = 0; y < height; y++) {
                 for (let x = 0; x < width; x++) {
                     const i = (y * width + x) * 4;
@@ -710,36 +671,9 @@ class GBAJS3_Core {
                     frameData[i] = r8; frameData[i + 1] = g8; frameData[i + 2] = b8; frameData[i + 3] = 0xFF; 
                 }
             }
-        } else if (displayMode === 0 && bg0Enabled) {
-            // Mode 0: Tiled Background Rendering 
-            
-            const bg0cnt = this.ioRegsView.getUint16(this.REG_BG0CNT, true);
-            
-            const tileBaseIndex = (bg0cnt >> 2) & 0x3;
-            const tileBase = tileBaseIndex * 0x4000; 
-            
-            const mapBaseIndex = (bg0cnt >> 8) & 0x1F;
-            const mapBaseOffset = mapBaseIndex * 0x800; 
-
-            const MAP_TILE_WIDTH = 32; 
-
-            for (let tileY = 0; tileY < 20; tileY++) {
-                for (let tileX = 0; tileX < 30; tileX++) {
-                    
-                    const mapIndex = tileY * MAP_TILE_WIDTH + tileX; 
-                    const mapWordOffset = mapBaseOffset + mapIndex * 2; 
-                    
-                    const mapEntry = vramView.getUint16(mapWordOffset % this.vram.byteLength, true);
-
-                    const tileNum = mapEntry & 0x3FF; 	
-                    const paletteBank = (mapEntry >> 12) & 0xF; 
-                    const flipH = (mapEntry >> 10) & 0x1; 	
-                    const flipV = (mapEntry >> 11) & 0x1;
-
-                    this.drawTile(this.ctx, tileNum, tileBase, mapBaseOffset, paletteBank, tileX * 8, tileY * 8, flipH, flipV);
-                }
-            }
         } 
+        // Mode 0 logic is intentionally skipped here for simplicity but would be needed for games.
+        // else if (displayMode === 0 && (dispcnt >> 8) & 0x1) { ... }
 
         this.ctx.putImageData(this.frameBuffer, 0, 0);
 
@@ -757,7 +691,7 @@ class GBAJS3_Core {
         this.ctx.fillText(`Frame: ${this.frameCounter}`, 5, 10);
         this.ctx.fillText(`PC: 0x${this.cpu.registers[REG_PC].toString(16).padStart(8, '0')}`, 5, 20);
         this.ctx.fillText(`VCOUNT: ${this.currentScanline}`, 5, 30);
-        this.ctx.fillText(`DISPSTAT: 0x${dispstat.toString(16).padStart(4, '0')}`, 5, 40); // <-- New DISPSTAT in Hex
+        this.ctx.fillText(`DISPSTAT: 0x${dispstat.toString(16).padStart(4, '0')}`, 5, 40); 
         this.ctx.fillText(`Mode: ${displayMode} (BG2: ${bg2Enabled})`, 5, 50);
         this.ctx.fillText(`Input: ${pressedKeys.join(', ') || 'None'}`, 5, 155);
     }
