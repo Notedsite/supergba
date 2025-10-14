@@ -6,6 +6,12 @@ const ARM_MODE = 0b10000; // User mode (for now)
 const FLAG_N = 0x80000000; // Negative flag (Bit 31)
 const FLAG_Z = 0x40000000; // Zero flag (Bit 30)
 
+// PPU Timing Constants
+const H_CYCLES = 1232; // Cycles per H-Draw/H-Blank line
+const V_DRAW_LINES = 160;
+const V_BLANK_LINES = 68;
+const V_TOTAL_LINES = V_DRAW_LINES + V_BLANK_LINES;
+
 // === GBA Input Key Map ===
 const KEY_MAP = {
     'z': 0x0001, 		 // A button
@@ -230,12 +236,12 @@ class GBA_CPU {
                         this.registers[Rd] = result;
                         break;
                         
-                    case 0b0010: // SUB (Subtract) <--- NEW: SUB
+                    case 0b0010: // SUB (Subtract) 
                         result = (operand1 - operand2) >>> 0; 
                         this.registers[Rd] = result;
                         break;
                         
-                    case 0b0100: // ADD (Add) <--- NEW: ADD
+                    case 0b0100: // ADD (Add) 
                         result = (operand1 + operand2) >>> 0; 
                         this.registers[Rd] = result;
                         break;
@@ -251,7 +257,7 @@ class GBA_CPU {
                         break;
                         
                     default:
-                        console.log(`[CPU] Unhandled Data Processing opcode: 0x${opcode.toString(16)}. Halting.`);
+                        // console.log(`[CPU] Unhandled Data Processing opcode: 0x${opcode.toString(16)}. Halting.`);
                         return;
                 }
                 
@@ -262,7 +268,7 @@ class GBA_CPU {
                 }
 
             } else if (isBlockDataTransfer) {
-                // Block Data Transfer (STM/LDM) <--- NEW: STM
+                // Block Data Transfer (STM/LDM) 
                 
                 const Rn = (instruction >> 16) & 0xF; 
                 const registerList = instruction & 0xFFFF; // Bits 0-15
@@ -278,30 +284,28 @@ class GBA_CPU {
                     let currentAddress = baseAddress;
                     let numRegisters = 0;
                     
-                    // Count registers to calculate final address for write-back
                     for (let i = 0; i < 16; i++) {
                         if ((registerList >> i) & 0x1) {
                             numRegisters++;
                         }
                     }
                     
-                    // Adjust starting address based on addressing mode (Simplified STMDB/STMFD)
-                    if (P_bit === 1 && U_bit === 0) { // Decrement Before (Stack: Full Descending)
+                    // Simplified: Assume STMDB (Decrement Before) for stack push (P=1, U=0)
+                    if (P_bit === 1 && U_bit === 0) { 
                         currentAddress = baseAddress - (numRegisters * 4);
                     } 
-                    // Other modes are complex; sticking to basic stack push (STMDB)
+                    // Other modes (like STMIA/Full Ascending) would start at baseAddress.
 
                     let bytesWritten = 0;
                     for (let i = 0; i < 16; i++) {
                         if ((registerList >> i) & 0x1) {
                             let value = this.registers[i];
                             
-                            // CRITICAL: R15 (PC) is stored as PC + 12 (Instruction Address + 8)
+                            // CRITICAL: R15 (PC) is stored as PC + 8
                             if (i === REG_PC) {
                                 value = instructionAddress + 8;
                             }
 
-                            // Write the value
                             this.bus.write32(currentAddress + bytesWritten, value);
                             bytesWritten += 4;
                         }
@@ -384,12 +388,21 @@ class GBAJS3_Core {
         this.KEY_MAP = KEY_MAP; 
         
         // PPU/IO REGISTERS
-        this.REG_DISPCNT = 0x000; // Address 0x04000000
-        this.REG_BG0CNT = 0x008; 	// BG0 Control Register Address (0x04000008)
-        
+        this.REG_DISPCNT = 0x000; // 0x04000000 (Display Control)
+        this.REG_DISPSTAT = 0x004; // 0x04000004 (Display Status: V-Blank, H-Blank, VCOUNT)
+        this.REG_VCOUNT = 0x006;   // 0x04000006 (Current Scanline)
+        this.REG_BG0CNT = 0x008; 	// 0x04000008 (BG0 Control Register)
+
+        // Initialize IO Registers
         this.ioRegsView.setUint16(this.REG_DISPCNT, 0x0000, true); 
+        this.ioRegsView.setUint16(this.REG_DISPSTAT, 0x0000, true); 
+        this.ioRegsView.setUint16(this.REG_VCOUNT, 0x0000, true); 
         this.ioRegsView.setUint16(this.REG_BG0CNT, 0x0000, true); 
 
+        // PPU Timing Initialization
+        this.currentScanline = 0;
+        this.cyclesToNextHBlank = H_CYCLES;
+        
         // Initialize Bus and CPU
         this.bus = new MemoryBus(
             this.ewram, this.iwram, this.vram, this.paletteRAM, 
@@ -423,7 +436,6 @@ class GBAJS3_Core {
 
 
     drawPlaceholder() {
-        // Draw initial black screen with info text
         this.ctx.fillStyle = '#000000';
         this.ctx.fillRect(0, 0, 240, 160);
         
@@ -432,7 +444,7 @@ class GBAJS3_Core {
         this.ctx.textAlign = 'center';
         this.ctx.fillText('SuperGBA Core Ready (Interpreter Active)', 120, 70);
         this.ctx.fillText('Awaiting ROM Data...', 120, 90);
-        this.ctx.putImageData(this.frameBuffer, 0, 0); // Apply immediately
+        this.ctx.putImageData(this.frameBuffer, 0, 0); 
     }
 
     handleInput(event, isKeyDown) {
@@ -444,23 +456,65 @@ class GBAJS3_Core {
             } else {
                 this.keyInputRegister |= keyBit;
             }
-            // Directly update IO Register for key state
             this.ioRegsView.setUint16(this.KEYINPUT_ADDR, this.keyInputRegister, true);
         }
     }
+
+    updatePPU(cycles) {
+        this.cyclesToNextHBlank -= cycles;
+        
+        // Check for H-Blank and move to the next scanline
+        while (this.cyclesToNextHBlank <= 0) {
+            this.cyclesToNextHBlank += H_CYCLES;
+            this.currentScanline++;
+
+            // 1. Reset DISPSTAT flags
+            let dispstat = this.ioRegsView.getUint16(this.REG_DISPSTAT, true);
+            dispstat &= ~0x0002; // Clear H-Blank flag (Bit 1)
+            dispstat &= ~0x0001; // Clear V-Blank flag (Bit 0)
+            
+            // 2. Wrap around at the end of the frame
+            if (this.currentScanline >= V_TOTAL_LINES) {
+                this.currentScanline = 0;
+            }
+
+            // 3. Set V-Blank flag (Bit 0) and trigger frame render
+            if (this.currentScanline >= V_DRAW_LINES) {
+                dispstat |= 0x0001; // Set V-Blank flag
+                if (this.currentScanline === V_DRAW_LINES) {
+                    // Render once at the start of V-Blank
+                    this.renderScreen(); 
+                }
+            }
+            
+            // 4. Set H-Blank flag (Bit 1) for a portion of the line (Simplified)
+            // H-Blank lasts from line 0 to 159, and is always set during V-Blank.
+            dispstat |= 0x0002; 
+            
+            // 5. Update VCOUNT register (Current Scanline)
+            this.ioRegsView.setUint16(this.REG_VCOUNT, this.currentScanline, true);
+            this.ioRegsView.setUint16(this.REG_DISPSTAT, dispstat, true);
+        }
+    }
+
 
     runGameLoop() {
         if (!this.paused) {
             this.frameCounter++;
             
-            // Run a high number of cycles per frame to approach real speed (16.78 MHz)
+            // Run a high number of cycles per frame
             const CYCLES_PER_FRAME = 200000; 
-            
-            for (let i = 0; i < CYCLES_PER_FRAME; i++) {
-                this.cpu.executeNextInstruction(); 
+            const cyclesPerStep = 50; 
+
+            for (let i = 0; i < CYCLES_PER_FRAME; i += cyclesPerStep) {
+                // Execute CPU instructions (Roughly 4 cycles per instruction)
+                for(let j = 0; j < cyclesPerStep / 4; j++) { 
+                    this.cpu.executeNextInstruction(); 
+                }
+                
+                // Update PPU timing after each batch of execution
+                this.updatePPU(cyclesPerStep);
             }
-            
-            this.renderScreen();
         }
         this.animationFrameId = requestAnimationFrame(() => this.runGameLoop());
     }
@@ -468,16 +522,15 @@ class GBAJS3_Core {
     // --- Helper to draw a single 8x8 tile (for Mode 0) ---
     drawTile(ctx, tileNum, tileBase, mapBase, paletteBank, x, y, flipH, flipV) {
         
-        const tileDataOffset = tileBase + tileNum * 32; // 32 bytes per 8x8/4bpp tile
+        const tileDataOffset = tileBase + tileNum * 32; 
         const vramView = new DataView(this.vram.buffer);
 
         const paletteView = new DataView(this.paletteRAM.buffer);
-        const paletteBaseOffset = paletteBank * 32; // 16 colors * 2 bytes/color
+        const paletteBaseOffset = paletteBank * 32; 
 
         for (let row = 0; row < 8; row++) {
             for (let col = 0; col < 8; col++) {
                 
-                // Read pixel index (4 bits per pixel, 2 pixels per byte)
                 const byteOffset = tileDataOffset + row * 4 + Math.floor(col / 2);
                 const byte = vramView.getUint8(byteOffset % this.vram.byteLength);
 
@@ -488,14 +541,12 @@ class GBAJS3_Core {
                     pixelIndex = byte >> 4;
                 }
                 
-                // Index 0 is transparent in tiled backgrounds
                 if (pixelIndex === 0) continue; 
                 
-                // Read color from Palette RAM
                 const colorOffset = paletteBaseOffset + pixelIndex * 2;
                 const color16 = paletteView.getUint16(colorOffset % this.paletteRAM.byteLength, true);
 
-                // Convert BGR-555 to RGB-888
+                // BGR-555 to RGB-888 conversion
                 let r5 = (color16 >> 10) & 0x1F; 
                 let g5 = (color16 >> 5) & 0x1F;
                 let b5 = color16 & 0x1F;
@@ -503,7 +554,6 @@ class GBAJS3_Core {
                 let g8 = (g5 << 3) | (g5 >> 2);
                 let b8 = (b5 << 3) | (b5 >> 2);
                 
-                // Draw pixel to frame buffer
                 const drawX = x + col;
                 const drawY = y + row;
                 
@@ -524,14 +574,13 @@ class GBAJS3_Core {
         const width = 240;
         const height = 160;
         
-        // 1. Read DISPCNT
         const dispcnt = this.ioRegsView.getUint16(this.REG_DISPCNT, true);
-        const displayMode = dispcnt & 0x7; // Bits 0-2 (0-5)
-        const bg0Enabled = (dispcnt >> 8) & 0x1; // Bit 8
+        const displayMode = dispcnt & 0x7; 
+        const bg0Enabled = (dispcnt >> 8) & 0x1; 
 
         const vramView = new DataView(this.vram.buffer);
         
-        // Clear frame data to black at the start of every frame
+        // Clear frame data to black
         for (let i = 0; i < frameData.length; i += 4) {
             frameData[i] = 0; 	
             frameData[i + 1] = 0; 
@@ -548,7 +597,6 @@ class GBAJS3_Core {
                     const i = (y * width + x) * 4;
                     const vram_offset = (y * width + x) * 2;
                     
-                    // Boundary check
                     if (vram_offset >= this.vram.byteLength) continue;
 
                     const color16 = vramView.getUint16(vram_offset, true);
@@ -566,7 +614,7 @@ class GBAJS3_Core {
             }
         } else if (displayMode === 0 && bg0Enabled) {
             // Mode 0: Tiled Background Rendering (Simple BG0)
-            
+            // (Tiled rendering logic remains here for future use)
             const bg0cnt = this.ioRegsView.getUint16(this.REG_BG0CNT, true);
             
             const tileBaseIndex = (bg0cnt >> 2) & 0x3;
@@ -593,9 +641,7 @@ class GBAJS3_Core {
                     this.drawTile(this.ctx, tileNum, tileBase, mapBaseOffset, paletteBank, tileX * 8, tileY * 8, flipH, flipV);
                 }
             }
-        } else {
-            // Screen is black if mode is unsupported/disabled.
-        }
+        } 
 
         this.ctx.putImageData(this.frameBuffer, 0, 0);
 
@@ -612,7 +658,8 @@ class GBAJS3_Core {
         this.ctx.textAlign = 'left';
         this.ctx.fillText(`Frame: ${this.frameCounter}`, 5, 10);
         this.ctx.fillText(`PC: 0x${this.cpu.registers[REG_PC].toString(16).padStart(8, '0')}`, 5, 20);
-        this.ctx.fillText(`Mode: ${displayMode}`, 5, 30);
+        this.ctx.fillText(`VCOUNT: ${this.currentScanline}`, 5, 30);
+        this.ctx.fillText(`Mode: ${displayMode}`, 5, 40);
         this.ctx.fillText(`Input: ${pressedKeys.join(', ') || 'None'}`, 5, 155);
     }
     
