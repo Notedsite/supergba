@@ -1,4 +1,4 @@
-// GBAJS3-Core.js (Final Script with BIOS Tracing)
+// GBAJS3-Core.js (Final Script with Mode 0 and BIOS Tracing)
 
 // === CONSTANTS for ARM Mode and Flags ===
 const REG_PC = 15;
@@ -21,8 +21,8 @@ const REG_VCOUNT   = 0x006;
 const REG_BG0CNT   = 0x008; 
 
 // TILE MODE CONSTANTS
-const TILE_SIZE = 32; 
-const TILE_MAP_ENTRY_SIZE = 2; 
+const TILE_SIZE = 32; // Bytes per 8x8 tile in 4-bit mode (16 colors)
+const TILE_MAP_ENTRY_SIZE = 2; // Bytes per map entry
 
 // === MemoryBus (Handles memory reads/writes) ===
 class MemoryBus {
@@ -184,6 +184,7 @@ class GBA_CPU {
                     if (Rd === REG_PC) {
                         this.registers[REG_PC] = (data & ~0x3) + 4; 
                         branchOccurred = true;
+                        // Log the BIOS exit event
                         if (instructionAddress < 0x4000) {
                             console.log(`[BIOS TRACE] BIOS Exit: Jump to ROM/Entry point. New PC: 0x${data.toString(16).toUpperCase().padStart(8, '0')}`);
                         }
@@ -227,7 +228,10 @@ class GBA_CPU {
                     // BIOS V-Blank Stall Detection (PC 0x94)
                     if (instructionAddress === 0x94 && opcode === 0b0000) { 
                         if (this.CPSR & FLAG_Z) { 
-                            console.log(`[BIOS TRACE] Entered V-Blank wait loop (PC 0x94). Waiting for graphics sync.`);
+                            // Only log this once, on the first time we hit the loop
+                            if (this.bus.core.currentScanline < 10) {
+                                console.log(`[BIOS TRACE] Entered V-Blank wait loop (PC 0x94). Waiting for graphics sync.`);
+                            }
                             this.registers[REG_PC] = 0x8C + 8;
                             branchOccurred = true;
                             return; 
@@ -240,6 +244,8 @@ class GBA_CPU {
         if (!branchOccurred) {
             this.registers[REG_PC] += 4; 
         }
+        // Signal that an instruction was executed
+        return true; 
     }
 }
 
@@ -319,7 +325,10 @@ class GBAJS3_Core {
                 this.currentVideoMode = -1; // Forced Blank
                 console.log(`[IO TRACE] DISPCNT written: Forced Blank (-1)`);
             } else {
-                 console.log(`[IO TRACE] DISPCNT written. New Mode: ${this.currentVideoMode}`);
+                 // Log only if the mode is changing or is a critical mode
+                 if (this.currentVideoMode !== (value & 0x7)) {
+                    console.log(`[IO TRACE] DISPCNT written. New Mode: ${this.currentVideoMode}`);
+                 }
             }
         }
     }
@@ -358,6 +367,7 @@ class GBAJS3_Core {
                 const tileID = mapEntry & 0x3FF; 
                 const paletteID = (mapEntry >> 12) & 0xF; 
 
+                // Tile ID 0 is often reserved for transparency and skipped here
                 if (tileID === 0) continue; 
                 
                 const tileBytes = is8bpp ? 64 : TILE_SIZE; 
@@ -380,6 +390,7 @@ class GBAJS3_Core {
                             paletteIndex = (px % 2) === 0 ? (tileByte & 0xF) : (tileByte >> 4);
                         }
 
+                        // Index 0 in the palette is reserved for transparency
                         if (paletteIndex === 0) continue; 
 
                         const palBankOffset = is8bpp ? 0 : (paletteID * 32);
@@ -429,7 +440,7 @@ class GBAJS3_Core {
         bgG = (g5 << 3) | (g5 >> 2);
         bgB = (b5 << 3) | (b5 >> 2);
         
-        // If mode is Mode 1 or 2 (unimplemented tile modes), force MAGENTA clue
+        // If mode is Mode 1 or 2 (unimplemented tile modes), show MAGENTA clue
         if (this.currentVideoMode === 1 || this.currentVideoMode === 2) {
              bgR = 255; 
              bgG = 0; 
@@ -542,11 +553,16 @@ class GBAJS3_Core {
         
         if (!this.paused) {
             let cycles = 0; 
+            const MAX_CPU_STEPS = 500; // Limit the steps per frame for smooth drawing/logging
+            let steps = 0;
             
-            while (cycles < CYCLES_PER_FRAME) {
+            while (cycles < CYCLES_PER_FRAME && steps < MAX_CPU_STEPS) {
+                
                 this.cpu.executeNextInstruction(); 
                 this.updatePPU(CYCLES_PER_INSTRUCTION);
                 cycles += CYCLES_PER_INSTRUCTION;
+                steps++;
+                
             }
         }
     }
