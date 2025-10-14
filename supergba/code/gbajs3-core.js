@@ -404,20 +404,40 @@ class GBAJS3_Core {
         }
     }
 
-    loadRom(romData) {
-        if (!romData || romData.byteLength === 0) throw new Error("Empty ROM data.");
-        
-        this.romData = new Uint8Array(romData); 
-        this.bus.romData = this.romData; 
-        
-        this.romLoaded = true;
-        this.paused = false;
-        
-        if (!this.animationFrameId) {
-            this.runGameLoop();
-        }
-        console.log(`[GBAJS3_Core] ROM loaded. Emulation starting/resuming.`);
+    drawTestLogo() {
+    // This is a minimal stub to put non-zero data into VRAM, simulating the BIOS logo
+    // It's a placeholder for where actual BIOS rendering would happen.
+    const VRAM_BASE = 0x06000000;
+    const PRAM_BASE = 0x05000000;
+
+    // 1. Set a background color (Palette entry 0) to a distinct color, e.g., Blue.
+    this.bus.write16(PRAM_BASE, 0x7C00); // 0b11111 00000 00000 (Max Red)
+
+    // 2. Draw a few non-black pixels in VRAM (Mode 3 is 2 bytes per pixel)
+    for (let i = 0; i < 100; i++) {
+        // Write the max green color to VRAM (0b00000 11111 00000)
+        this.bus.write16(VRAM_BASE + i * 2, 0x03E0); 
     }
+    
+    // 3. Force the video mode to 3 for drawing
+    this.setVideoMode(3);
+}
+
+// Update the loadRom method
+loadRom(romData) {
+    // ... (existing checks) ...
+    
+    this.romData = new Uint8Array(romData); 
+    this.bus.romData = this.romData; 
+    
+    // Inject the test logo data BEFORE starting the loop
+    this.drawTestLogo(); // <--- NEW LINE
+
+    this.romLoaded = true;
+    this.paused = false;
+    
+    // ... (rest of the function) ...
+}
 
     runGameLoop() {
         this.animationFrameId = requestAnimationFrame(() => this.runGameLoop()); 
