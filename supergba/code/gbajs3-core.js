@@ -65,7 +65,26 @@ class MemoryBus {
         return this.read32(address) & 0xFFFF;
     }
 
-    // Helper for 16-bit writes
+    // Helper for 8-bit writes (CRITICAL for REG_WSCNT)
+    write8(address, value) {
+        // 1. IO Register Write (0x04000000 - 0x040003FE)
+        if (address >= 0x04000000 && address < 0x04000400) {
+            const offset = address - 0x04000000;
+            const currentWord = this.ioRegsView.getUint32(offset & ~0x3, true);
+            
+            // Calculate shift based on byte position (0, 8, 16, 24)
+            const shift = (offset & 0x3) * 8; 
+            
+            // Clear the existing byte and OR in the new value
+            const mask = 0xFF << shift;
+            const newValue = (currentWord & ~mask) | ((value & 0xFF) << shift);
+            
+            this.ioRegsView.setUint32(offset & ~0x3, newValue, true);
+            return;
+        }
+    }
+
+    // Helper for 16-bit writes (CRITICAL for REG_DISPCNT/VRAM)
     write16(address, value) {
         // 1. PRAM Write (0x05000000 - 0x050003FF)
         if (address >= 0x05000000 && address < 0x05000400) {
@@ -118,7 +137,7 @@ class MemoryBus {
         return 0x0; 
     }
 
-    // Helper for 32-bit writes
+    // Helper for 32-bit writes (CRITICAL for VRAM/SWI)
     write32(address, value) {
         // 1. PRAM Write (0x05000000 - 0x050003FF)
         if (address >= 0x05000000 && address < 0x05000400) {
@@ -167,6 +186,46 @@ class GBA_CPU {
             this.CPSR |= FLAG_N;
         }
     }
+    
+    // NEW: SWI Handler (CpuSet is essential for logo data copy)
+    handleSWI(swiNumber) {
+        if (swiNumber === 0x0C) { // SWI 0x0C: CpuSet (Fill or Copy memory)
+            
+            // R0: Source Address
+            const src = this.registers[0]; 
+            // R1: Destination Address
+            const dst = this.registers[1]; 
+            // R2: Control Word
+            const control = this.registers[2]; 
+            
+            const mode16Bit = (control >> 25) & 0x1; // 0=16-bit (2-byte), 1=32-bit (4-byte)
+            const isFill = (control >> 24) & 0x1;    // 0=Copy, 1=Fill
+            const count = control & 0xFFFFFF;        // Number of units
+            
+            if (!isFill) {
+                // Copy operation (CRITICAL: Copies logo and palette)
+                
+                let currentSrc = src;
+                let currentDst = dst;
+                
+                if (mode16Bit === 0) { // 16-bit copy (Used for Palette/DMA copy)
+                    for (let i = 0; i < count; i++) {
+                        const value = this.bus.read16(currentSrc);
+                        this.bus.write16(currentDst, value);
+                        currentSrc += 2;
+                        currentDst += 2;
+                    }
+                } else { // 32-bit copy (Used for Logo Bitmap)
+                     for (let i = 0; i < count; i++) {
+                        const value = this.bus.read32(currentSrc);
+                        this.bus.write32(currentDst, value);
+                        currentSrc += 4;
+                        currentDst += 4;
+                    }
+                }
+            }
+        }
+    }
 
     executeNextInstruction() {
         const currentPC = this.registers[REG_PC];
@@ -180,11 +239,14 @@ class GBA_CPU {
         const isBranch = ((instruction >> 25) & 0b111) === 0b101;
         const isDataProcessing = (instruction >> 26) === 0b00; 
         
-        // Block Data Transfer (STM/LDM) - Bit 27-25 is 100
+        // Block Data Transfer (STM/LDM)
         const isBlockDataTransfer = ((instruction >> 25) & 0b111) === 0b100;
         
-        // Load/Store Register (LDR/STR) - Bit 27-26 is 01
+        // Load/Store Register (LDR/STR)
         const isLoadStore = (instruction >> 26) === 0b01; 
+        
+        // SWI Check
+        const isSWI = ((instruction >> 24) & 0b1111) === 0b1111; 
 
         // Increment PC before execution
         this.registers[REG_PC] += 4; 
@@ -203,7 +265,7 @@ class GBA_CPU {
                 this.registers[REG_PC] = currentPC + offset; 
                 
             } else if (isDataProcessing) {
-                // Data Processing Instruction (MOV, AND, ORR, ADD, SUB, CMP, etc.)
+                // Data Processing Instruction
                 const Rd = (instruction >> 12) & 0xF; 
                 const isImmediate = instruction & 0x02000000;
                 
@@ -215,13 +277,11 @@ class GBA_CPU {
                 
                 // Determine Operand 2 (Immediate or Register)
                 if (isImmediate) {
-                    // Simplified: Use the 8-bit immediate value directly 
                     operand2 = instruction & 0xFF; 
                 } else {
                     const Rm = instruction & 0xF;
                     operand2 = this.registers[Rm];
                     
-                    // PC adjustment if used as source
                     if (Rm === REG_PC) { 
                         operand2 = instructionAddress + 8;
                     }
@@ -230,46 +290,41 @@ class GBA_CPU {
                 let result = 0;
 
                 switch (opcode) {
-                    case 0b0000: // AND (Logical AND)
+                    case 0b0000: // AND 
                         result = operand1 & operand2;
                         this.registers[Rd] = result;
                         break;
                         
-                    case 0b0010: // SUB (Subtract) 
+                    case 0b0010: // SUB 
                         result = (operand1 - operand2) >>> 0; 
-                        // Note: C and V flags logic omitted for simplicity.
                         break;
                         
-                    case 0b0100: // ADD (Add) 
+                    case 0b0100: // ADD 
                         result = (operand1 + operand2) >>> 0; 
-                        // Note: C and V flags logic omitted for simplicity.
                         break;
                         
-                    case 0b1010: // CMP (Compare) <--- Handles CMP
-                        // CMP is an arithmetic operation (SUB) that only sets flags.
+                    case 0b1010: // CMP (Compare)
                         result = (operand1 - operand2) >>> 0; 
                         break;
                         
-                    case 0b1100: // ORR (Logical OR)
+                    case 0b1100: // ORR 
                         result = operand1 | operand2;
                         this.registers[Rd] = result;
                         break;
                         
-                    case 0b1101: // MOV (Move)
-                        result = operand2; // Rn (operand1) is ignored for MOV
+                    case 0b1101: // MOV 
+                        result = operand2; 
                         this.registers[Rd] = result;
                         break;
                         
                     default:
-                        // console.log(`[CPU] Unhandled Data Processing opcode: 0x${opcode.toString(16)}. Halting.`);
                         return;
                 }
                 
-                // If S-bit is set, update flags (S-bit is always set for CMP)
+                // Set flags if S-bit is set or instruction is CMP
                 if (instruction & 0x00100000 || opcode === 0b1010) { 
                     this.setZNFlags(result);
                 }
-                // If the opcode wasn't CMP, write the result back to the register.
                 if (opcode !== 0b1010) {
                     this.registers[Rd] = result;
                 }
@@ -278,13 +333,13 @@ class GBA_CPU {
                 // Block Data Transfer (STM/LDM) 
                 
                 const Rn = (instruction >> 16) & 0xF; 
-                const registerList = instruction & 0xFFFF; // Bits 0-15
+                const registerList = instruction & 0xFFFF; 
                 const baseAddress = this.registers[Rn];
                 
-                const P_bit = (instruction >> 24) & 0x1; // Pre/Post
-                const U_bit = (instruction >> 23) & 0x1; // Up/Down
+                const P_bit = (instruction >> 24) & 0x1; 
+                const U_bit = (instruction >> 23) & 0x1; 
                 const isStore = ((instruction >> 20) & 0x1) === 0x0; 
-                const W_bit = (instruction >> 21) & 0x1; // Write-back
+                const W_bit = (instruction >> 21) & 0x1; 
 
                 if (isStore) { // STM (Store Multiple)
                     
@@ -297,7 +352,7 @@ class GBA_CPU {
                         }
                     }
                     
-                    // Simplified: Assume STMDB (Decrement Before) for stack push (P=1, U=0)
+                    // Simplified: Assume STMDB (Decrement Before) 
                     if (P_bit === 1 && U_bit === 0) { 
                         currentAddress = baseAddress - (numRegisters * 4);
                     } 
@@ -317,14 +372,13 @@ class GBA_CPU {
                         }
                     }
 
-                    // Write-back the new base address
                     if (W_bit) {
                         this.registers[Rn] = currentAddress;
                     }
                 }
                 
             } else if (isLoadStore) {
-                // Load/Store Instruction (LDR/STR, LDRH/STRH, LDRB/STRB) <--- Updated LDR/STR/H
+                // Load/Store Instruction (LDR/STR, LDRH/STRH, LDRB/STRB)
                 
                 const Rd = (instruction >> 12) & 0xF; 
                 const Rn = (instruction >> 16) & 0xF; 
@@ -332,13 +386,13 @@ class GBA_CPU {
                 const isLoad = (instruction >> 20) & 0x1; 
                 const isByte = (instruction >> 22) & 0x1; 
                 
-                // Check if it's the Half-Word/Signed Byte format
+                // Half-Word/Signed Byte format check
                 const isHalfWordOrByte = ((instruction >> 25) & 0b111) === 0b000 && ((instruction >> 4) & 0b1111) === 0b1011;
 
                 if (isHalfWordOrByte) {
-                    // LDRH / STRH / LDRSB / LDRSH
-                    const H_code = (instruction >> 5) & 0b11; // 0b01 for H, 0b10 for SB, 0b11 for SH
-                    const offset = (instruction & 0xF) | ((instruction >> 8) & 0xF0); // 8-bit immediate offset
+                    // LDRH / STRH
+                    const H_code = (instruction >> 5) & 0b11; 
+                    const offset = (instruction & 0xF) | ((instruction >> 8) & 0xF0); 
                     
                     const baseAddress = this.registers[Rn];
                     const targetAddress = baseAddress + offset;
@@ -355,7 +409,7 @@ class GBA_CPU {
                     
                 } else {
                     // Standard LDR/STR (32-bit) and LDRB/STRB (Byte)
-                    const offset = instruction & 0xFFF; // 12-bit immediate offset
+                    const offset = instruction & 0xFFF; 
                     const baseAddress = this.registers[Rn];
                     const targetAddress = baseAddress + offset;
                     
@@ -379,15 +433,16 @@ class GBA_CPU {
                         const value = this.registers[Rd];
                         if (isByte) {
                             // STRB (Store Byte)
-                            // Simplified byte write to 32-bit aligned space. 
-                            // This works for I/O but is incorrect for general memory.
-                            this.bus.write32(targetAddress, value & 0xFF); 
+                            this.bus.write8(targetAddress, value & 0xFF); 
                         } else { 
                             // STR (32-bit)
                             this.bus.write32(targetAddress, value);
                         }
                     }
                 }
+            } else if (isSWI) { // SWI (Software Interrupt) <--- SWI EXECUTION
+                const swiNumber = instruction & 0xFFFFFF; 
+                this.handleSWI(swiNumber);
             }
         }
     }
@@ -496,29 +551,33 @@ class GBAJS3_Core {
             this.cyclesToNextHBlank += H_CYCLES;
             this.currentScanline++;
 
-            // 1. Reset DISPSTAT flags
-            let dispstat = this.ioRegsView.getUint16(this.REG_DISPSTAT, true);
-            dispstat &= ~0x0002; // Clear H-Blank flag (Bit 1)
-            dispstat &= ~0x0001; // Clear V-Blank flag (Bit 0)
-            
-            // 2. Wrap around at the end of the frame
+            // 1. Wrap around at the end of the frame
             if (this.currentScanline >= V_TOTAL_LINES) {
                 this.currentScanline = 0;
             }
 
-            // 3. Set V-Blank flag (Bit 0) and trigger frame render
+            // 2. Read existing status and clear dynamic flags
+            let dispstat = this.ioRegsView.getUint16(this.REG_DISPSTAT, true);
+            dispstat &= ~0x0003; // Clear V-Blank (Bit 0) and H-Blank (Bit 1)
+            dispstat &= ~0x0004; // Clear VCOUNT Match Flag (Bit 2)
+            
+            // 3. Set V-Blank flag (Bit 0)
             if (this.currentScanline >= V_DRAW_LINES) {
                 dispstat |= 0x0001; // Set V-Blank flag
                 if (this.currentScanline === V_DRAW_LINES) {
-                    // Render once at the start of V-Blank
                     this.renderScreen(); 
                 }
             }
             
-            // 4. Set H-Blank flag (Bit 1) for a portion of the line (Simplified)
+            // 4. Set H-Blank flag (Bit 1)
             dispstat |= 0x0002; 
             
-            // 5. Update VCOUNT register (Current Scanline)
+            // 5. VCOUNT Match Check (Simplified: The BIOS waits for VCOUNT 0)
+            if (this.currentScanline === 0) {
+                 dispstat |= 0x0004; 
+            }
+            
+            // 6. Update VCOUNT register (Current Scanline)
             this.ioRegsView.setUint16(this.REG_VCOUNT, this.currentScanline, true);
             this.ioRegsView.setUint16(this.REG_DISPSTAT, dispstat, true);
         }
