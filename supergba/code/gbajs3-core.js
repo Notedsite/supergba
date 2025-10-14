@@ -26,7 +26,10 @@ const REG_IME      = 0x208; // Interrupt Master Enable (0x4000208) <-- STUBBED
 
 // === MemoryBus (Handles memory reads/writes) ===
 class MemoryBus {
-    constructor(ewram, iwram, vram, paletteRAM, oam, ioRegsView, romData, biosData) {
+    constructor(core, ewram, iwram, vram, paletteRAM, oam, ioRegsView, romData, biosData) {
+        // Core reference (needed for IO write notification)
+        this.core = core; 
+        
         // Data Buffers
         this.ewram = ewram; // 0x02000000 (External WRAM, 256KB)
         this.iwram = iwram; // 0x03000000 (Internal WRAM, 32KB)
@@ -95,6 +98,11 @@ class MemoryBus {
         if (address >= 0x04000000 && address < 0x04000400) {
             const offset = address - 0x04000000;
             this.ioRegsView.setUint16(offset, value, true);
+            
+            // CRITICAL: Notify the core that an IO register was written
+            if (this.core) { 
+                this.core.handleIOWrite(address, value); 
+            }
             return;
         }
         
@@ -268,7 +276,7 @@ class GBA_CPU {
                             return; // Stop execution this cycle, effectively stalling
                         } else {
                             // Z=0 (V-Blank flag is 1, loop broken)
-                            console.log('[CPU] V-Blank stall broken (PC=0x98).', 'success');
+                            // console.log('[CPU] V-Blank stall broken (PC=0x98).', 'success');
                         }
                     } 
                     break;
@@ -294,14 +302,22 @@ class GBAJS3_Core {
         this.oam = new Uint8Array(0x400); // 1KB
         this.ioRegsView = new DataView(new ArrayBuffer(0x400)); // 1KB for I/O
 
-        this.bus = new MemoryBus(this.ewram, this.iwram, this.vram, this.paletteRAM, this.oam, this.ioRegsView, null, biosData);
+        // Pass 'this' (the core object) to the MemoryBus
+        this.bus = new MemoryBus(
+            this, // <--- Core reference passed
+            this.ewram, this.iwram, this.vram, this.paletteRAM, this.oam, 
+            this.ioRegsView, null, biosData
+        );
         this.cpu = new GBA_CPU(this.bus);
         
         // PPU Timing Initialization
         this.currentScanline = 0;
         this.cyclesToNextHBlank = H_CYCLES;
+        
+        // **FIX for Syntax Error**: Properties initialized inside constructor
         this.paused = true; 
-        this.animationFrameId = null; // Initialize the frame ID
+        this.animationFrameId = null; 
+        this.currentVideoMode = 0; // Tracks the current video mode
 
         // Initialize I/O status registers (CRITICAL STUBBING)
         this.ioRegsView.setUint16(REG_DISPSTAT, 0, true);
@@ -330,7 +346,6 @@ class GBAJS3_Core {
         this.ctx.font = '12px sans-serif';
         this.ctx.textAlign = 'center';
         this.ctx.fillText('Core Initialized. Waiting for ROM.', 120, 80);
-        // Note: putImageData is called at the end of renderScreen, not here, but this is fine for initial draw
         this.ctx.putImageData(this.frameBuffer, 0, 0); 
     }
     
@@ -345,51 +360,86 @@ class GBAJS3_Core {
             currentValue |= (1 << 10); // Enable BG2
         }
         this.bus.write16(DISPCNT_ADDRESS, currentValue);
+        this.currentVideoMode = mode;
+    }
+
+    // New method to handle IO writes and update core state (PPU stub)
+    handleIOWrite(address, value) {
+        const offset = address - 0x04000000;
+        
+        // DISPCNT (0x4000000)
+        if (offset === REG_DISPCNT) {
+            // Read video mode bits 0-2
+            this.currentVideoMode = value & 0x7;
+            
+            // Check for Forced Blank (Bit 7)
+            if (value & 0x80) {
+                this.currentVideoMode = -1; // Use -1 to denote forced blank
+            }
+        }
+        
+        // BG Control Registers (BGxCNT) 0x4000008-0x400000E
+        if (offset >= 0x08 && offset <= 0x0E) {
+            console.log(`[PPU Stub] BG Control Write: 0x${address.toString(16).toUpperCase()} = 0x${value.toString(16).toUpperCase()}`);
+        }
     }
     
     renderScreen() {
-        // We are only concerned with Mode 3 (used by the BIOS logo)
         const frameData = this.frameBuffer.data;
         const width = 240;
         const height = 160;
         const vramView = new DataView(this.vram.buffer);
-        const DISPCNT_ADDRESS = 0x04000000 + REG_DISPCNT;
-        const dispcnt = this.bus.read16(DISPCNT_ADDRESS);
         
-        const videoMode = dispcnt & 0x7;
-        
-        if (videoMode === 3) {
-            // Mode 3: 16-bit color, 240x160, uses VRAM at 0x06000000
-            for (let y = 0; y < height; y++) {
-                for (let x = 0; x < width; x++) {
-                    const i = (y * width + x) * 4; // Canvas data offset (RGBA)
-                    const vram_offset = (y * width + x) * 2; // VRAM data offset (16-bit color)
-                    
-                    if (vram_offset >= this.vram.byteLength) continue;
+        switch(this.currentVideoMode) {
+            case 3: 
+                // Mode 3: 16-bit color, 240x160 bitmap
+                for (let y = 0; y < height; y++) {
+                    for (let x = 0; x < width; x++) {
+                        const i = (y * width + x) * 4; // Canvas data offset (RGBA)
+                        const vram_offset = (y * width + x) * 2; // VRAM data offset (16-bit color)
+                        
+                        if (vram_offset >= this.vram.byteLength) continue;
 
-                    const color16 = vramView.getUint16(vram_offset, true);
+                        const color16 = vramView.getUint16(vram_offset, true);
 
-                    // GBA bit layout: x RRRRR GGGGG BBBBB (BGR-555 format)
-                    let b5 = color16 & 0x1F;
-                    let g5 = (color16 >> 5) & 0x1F;
-                    let r5 = (color16 >> 10) & 0x1F; 
+                        // GBA bit layout: x RRRRR GGGGG BBBBB (BGR-555 format)
+                        let b5 = color16 & 0x1F;
+                        let g5 = (color16 >> 5) & 0x1F;
+                        let r5 = (color16 >> 10) & 0x1F; 
 
-                    // CRITICAL FIX: BGR-555 to RGB-888 scaling (x8 + top 3 bits)
-                    let r8 = (r5 << 3) | (r5 >> 2);
-                    let g8 = (g5 << 3) | (g5 >> 2);
-                    let b8 = (b5 << 3) | (b5 >> 2);
-                    
-                    frameData[i] = r8; 
-                    frameData[i + 1] = g8; 
-                    frameData[i + 2] = b8; 
-                    frameData[i + 3] = 0xFF; // Alpha channel
+                        // CRITICAL FIX: BGR-555 to RGB-888 scaling (x8 + top 3 bits)
+                        let r8 = (r5 << 3) | (r5 >> 2);
+                        let g8 = (g5 << 3) | (g5 >> 2);
+                        let b8 = (b5 << 3) | (b5 >> 2);
+                        
+                        frameData[i] = r8; 
+                        frameData[i + 1] = g8; 
+                        frameData[i + 2] = b8; 
+                        frameData[i + 3] = 0xFF; // Alpha channel
+                    }
                 }
-            }
+                this.ctx.putImageData(this.frameBuffer, 0, 0); 
+                break;
+            
+            case 0: // Tile Mode 0
+            case 1: // Tile Mode 1 (w/ Affine)
+            case 2: // Tile Mode 2 (Affine only)
+                // PPU STUB for unimplemented Tile Modes: Draw MAGENTA
+                this.ctx.fillStyle = '#FF00FF'; 
+                this.ctx.fillRect(0, 0, 240, 160);
+                break;
+                
+            case 4: // Bitmap Mode 4
+            case 5: // Bitmap Mode 5
+            case -1: // Forced Blank
+            default:
+                // Draw BLACK for all other modes (unimplemented or forced blank)
+                this.ctx.fillStyle = '#000000'; 
+                this.ctx.fillRect(0, 0, 240, 160);
+                break;
         }
         
-        this.ctx.putImageData(this.frameBuffer, 0, 0);
-
-        // Draw Debug Info
+        // Draw Debug Info (ALWAYS OVERLAYED)
         const vcount = this.ioRegsView.getUint16(REG_VCOUNT, true);
         const pc = this.cpu.registers[REG_PC];
         this.ctx.fillStyle = '#FFFFFF';
@@ -397,6 +447,7 @@ class GBAJS3_Core {
         this.ctx.textAlign = 'left';
         this.ctx.fillText(`PC: 0x${pc.toString(16).toUpperCase().padStart(8, '0')}`, 5, 10);
         this.ctx.fillText(`VCOUNT: ${vcount}`, 5, 20);
+        this.ctx.fillText(`MODE: ${this.currentVideoMode}`, 5, 30);
     }
     
     updatePPU(cycles) {
