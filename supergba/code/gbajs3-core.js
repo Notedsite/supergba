@@ -40,7 +40,6 @@ class MemoryBus {
         this.biosData = biosData; 
     }
     
-    // Helper to read 16-bit data
     read16(address) {
         // 1. PRAM Read (0x05000000 - 0x050003FF)
         if (address >= 0x05000000 && address < 0x05000400) {
@@ -65,17 +64,14 @@ class MemoryBus {
         return this.read32(address) & 0xFFFF;
     }
 
-    // Helper for 8-bit writes (CRITICAL for REG_WSCNT)
     write8(address, value) {
         // 1. IO Register Write (0x04000000 - 0x040003FE)
         if (address >= 0x04000000 && address < 0x04000400) {
             const offset = address - 0x04000000;
             const currentWord = this.ioRegsView.getUint32(offset & ~0x3, true);
             
-            // Calculate shift based on byte position (0, 8, 16, 24)
             const shift = (offset & 0x3) * 8; 
             
-            // Clear the existing byte and OR in the new value
             const mask = 0xFF << shift;
             const newValue = (currentWord & ~mask) | ((value & 0xFF) << shift);
             
@@ -84,7 +80,6 @@ class MemoryBus {
         }
     }
 
-    // Helper for 16-bit writes (CRITICAL for REG_DISPCNT/VRAM)
     write16(address, value) {
         // 1. PRAM Write (0x05000000 - 0x050003FF)
         if (address >= 0x05000000 && address < 0x05000400) {
@@ -105,7 +100,6 @@ class MemoryBus {
         // 3. IO Register Write (0x04000000 - 0x04000400)
         if (address >= 0x04000000 && address < 0x04000400) {
             const offset = address - 0x04000000;
-            // CRITICAL: Ensure setUint16 is used for 16-bit registers (like DISPCNT)
             this.ioRegsView.setUint16(offset, value, true);
             return;
         }
@@ -116,7 +110,7 @@ class MemoryBus {
         if (address < 0x00004000 && this.biosData) {
             const biosView = new DataView(this.biosData);
             try {
-                return biosView.getUint32(address, true); // Little Endian
+                return biosView.getUint32(address, true); 
             } catch (e) {
                 return 0x0; 
             }
@@ -138,7 +132,6 @@ class MemoryBus {
         return 0x0; 
     }
 
-    // Helper for 32-bit writes (CRITICAL for VRAM/SWI)
     write32(address, value) {
         // 1. PRAM Write (0x05000000 - 0x050003FF)
         if (address >= 0x05000000 && address < 0x05000400) {
@@ -172,8 +165,7 @@ class GBA_CPU {
         this.bus = bus;
         this.registers = new Uint32Array(16);
         
-        // CRITICAL FIX: Initialize R13 (Stack Pointer) for a valid stack region
-        this.registers[13] = 0x03007F00; // R13_USR/SYS 
+        this.registers[13] = 0x03007F00; // R13_USR/SYS (Stack Pointer)
         
         this.CPSR = 0x00000010 | ARM_MODE; 
         
@@ -192,7 +184,6 @@ class GBA_CPU {
         }
     }
     
-    // SWI Handler (CpuSet is essential for logo data copy)
     handleSWI(swiNumber) {
         if (swiNumber === 0x0C) { // SWI 0x0C: CpuSet (Fill or Copy memory)
             
@@ -230,7 +221,6 @@ class GBA_CPU {
     executeNextInstruction() {
         const currentPC = this.registers[REG_PC];
         
-        // Pipelining: Instruction is fetched at PC - 8
         const instructionAddress = currentPC - 8;
         const instruction = this.bus.read32(instructionAddress);
         
@@ -242,24 +232,18 @@ class GBA_CPU {
         const isLoadStore = (instruction >> 26) === 0b01; 
         const isSWI = ((instruction >> 24) & 0b1111) === 0b1111; 
 
-        // Increment PC before execution
         this.registers[REG_PC] += 4; 
         
-        // Simplified condition check (always execute if cond is 0b1110 (AL))
         if (cond === 0b1110) { 
             
             if (isBranch) {
-                // Branch Instruction (B/BL)
                 let offset = (instruction & 0x00FFFFFF) << 2; 
-                // Sign extend 24-bit offset to 32-bit
                 if (offset & 0x02000000) {
                     offset |= 0xFC000000; 
                 }
-                
                 this.registers[REG_PC] = currentPC + offset; 
                 
             } else if (isDataProcessing) {
-                // Data Processing Instruction
                 const Rd = (instruction >> 12) & 0xF; 
                 const isImmediate = instruction & 0x02000000;
                 
@@ -281,36 +265,23 @@ class GBA_CPU {
                 let result = 0;
 
                 switch (opcode) {
-                    case 0b0000: // AND 
-                    case 0b0010: // SUB 
-                    case 0b0100: // ADD 
-                    case 0b1010: // CMP 
-                    case 0b1100: // ORR 
-                    case 0b1101: { // MOV 
-                        // Simplified execution for common opcodes
-                        if (opcode === 0b0000) result = operand1 & operand2;
-                        else if (opcode === 0b0010) result = (operand1 - operand2) >>> 0; 
-                        else if (opcode === 0b0100) result = (operand1 + operand2) >>> 0; 
-                        else if (opcode === 0b1010) result = (operand1 - operand2) >>> 0; 
-                        else if (opcode === 0b1100) result = operand1 | operand2;
-                        else if (opcode === 0b1101) result = operand2; 
-                        
-                        if (instruction & 0x00100000 || opcode === 0b1010) { 
-                            this.setZNFlags(result);
-                        }
-                        if (opcode !== 0b1010) {
-                            this.registers[Rd] = result;
-                        }
-                        break;
-                    }
-                    default:
-                        // Ignore unsupported DP instructions
-                        break;
+                    case 0b0000: result = operand1 & operand2; break;
+                    case 0b0010: result = (operand1 - operand2) >>> 0; break;
+                    case 0b0100: result = (operand1 + operand2) >>> 0; break;
+                    case 0b1010: result = (operand1 - operand2) >>> 0; break; // CMP
+                    case 0b1100: result = operand1 | operand2; break;
+                    case 0b1101: result = operand2; break; // MOV
+                    default: return;
+                }
+                
+                if (instruction & 0x00100000 || opcode === 0b1010) { 
+                    this.setZNFlags(result);
+                }
+                if (opcode !== 0b1010) {
+                    this.registers[Rd] = result;
                 }
 
             } else if (isBlockDataTransfer) {
-                // Block Data Transfer (STM/LDM) 
-                
                 const Rn = (instruction >> 16) & 0xF; 
                 const registerList = instruction & 0xFFFF; 
                 const baseAddress = this.registers[Rn];
@@ -321,7 +292,6 @@ class GBA_CPU {
                 const W_bit = (instruction >> 21) & 0x1; 
 
                 if (isStore) { // STM (Store Multiple)
-                    
                     let currentAddress = baseAddress;
                     let numRegisters = 0;
                     
@@ -331,7 +301,6 @@ class GBA_CPU {
                         }
                     }
                     
-                    // Simplified: Assume STMDB (Decrement Before) 
                     if (P_bit === 1 && U_bit === 0) { 
                         currentAddress = baseAddress - (numRegisters * 4);
                     } 
@@ -356,15 +325,12 @@ class GBA_CPU {
                 }
                 
             } else if (isLoadStore) {
-                // Load/Store Instruction (LDR/STR, LDRH/STRH, LDRB/STRB)
-                
                 const Rd = (instruction >> 12) & 0xF; 
                 const Rn = (instruction >> 16) & 0xF; 
                 
                 const isLoad = (instruction >> 20) & 0x1; 
                 const isByte = (instruction >> 22) & 0x1; 
                 
-                // Half-Word/Signed Byte format check (Used for LDRH/STRH)
                 const isHalfWordOrByte = ((instruction >> 25) & 0b111) === 0b000 && ((instruction >> 4) & 0b1111) === 0b1011;
 
                 if (isHalfWordOrByte) {
@@ -376,10 +342,10 @@ class GBA_CPU {
                     const targetAddress = baseAddress + offset;
                     
                     if (isLoad) { // LDRH
-                        if (H_code === 0b01) { // 0b01 = Half-word (16-bit)
+                        if (H_code === 0b01) { 
                             this.registers[Rd] = this.bus.read16(targetAddress);
                         }
-                    } else { // STRH (The one that sets REG_DISPCNT)
+                    } else { // STRH 
                         if (H_code === 0b01) { 
                             this.bus.write16(targetAddress, this.registers[Rd] & 0xFFFF);
                         }
@@ -435,8 +401,8 @@ class GBAJS3_Core {
         // Memory Stubs
         this.ewram = new Uint8Array(0x40000); 
         this.iwram = new Uint8Array(0x8000); 	
-        this.vram = new Uint8Array(0x18000); // 96KB
-        this.paletteRAM = new Uint8Array(0x400); // 1KB (512 colors)
+        this.vram = new Uint8Array(0x18000); 
+        this.paletteRAM = new Uint8Array(0x400); 
         this.oam = new Uint8Array(0x400); 
         this.ioRegs = new ArrayBuffer(0x400); 
         this.ioRegsView = new DataView(this.ioRegs);
@@ -445,10 +411,10 @@ class GBAJS3_Core {
         this.KEY_MAP = KEY_MAP; 
         
         // PPU/IO REGISTERS
-        this.REG_DISPCNT = 0x000; // 0x04000000 (Display Control)
-        this.REG_DISPSTAT = 0x004; // 0x04000004 (Display Status: V-Blank, H-Blank, VCOUNT)
-        this.REG_VCOUNT = 0x006;   // 0x04000006 (Current Scanline)
-        this.REG_BG0CNT = 0x008; 	// 0x04000008 (BG0 Control Register)
+        this.REG_DISPCNT = 0x000; 
+        this.REG_DISPSTAT = 0x004; 
+        this.REG_VCOUNT = 0x006;   
+        this.REG_BG0CNT = 0x008; 	
 
         // Initialize IO Registers to power-on state
         this.ioRegsView.setUint16(this.REG_DISPCNT, 0x0000, true); 
@@ -520,38 +486,35 @@ class GBAJS3_Core {
     updatePPU(cycles) {
         this.cyclesToNextHBlank -= cycles;
         
-        // Check for H-Blank and move to the next scanline
         while (this.cyclesToNextHBlank <= 0) {
             this.cyclesToNextHBlank += H_CYCLES;
             this.currentScanline++;
 
-            // 1. Wrap around at the end of the frame
             if (this.currentScanline >= V_TOTAL_LINES) {
                 this.currentScanline = 0;
             }
 
-            // 2. Read existing status and clear dynamic flags
+            // Read existing status, clear dynamic flags (V-Blank, H-Blank, VCOUNT Match)
             let dispstat = this.ioRegsView.getUint16(this.REG_DISPSTAT, true);
-            dispstat &= ~0x0003; // Clear V-Blank (Bit 0) and H-Blank (Bit 1)
-            dispstat &= ~0x0004; // Clear VCOUNT Match Flag (Bit 2)
+            dispstat &= ~0x0007; // Clear V-Blank (Bit 0), H-Blank (Bit 1), and VCOUNT Match (Bit 2)
             
-            // 3. Set V-Blank flag (Bit 0)
+            // 1. Set H-Blank flag (Bit 1)
+            dispstat |= 0x0002; 
+
+            // 2. Set V-Blank flag (Bit 0) and trigger render
             if (this.currentScanline >= V_DRAW_LINES) {
-                dispstat |= 0x0001; // Set V-Blank flag
-                if (this.currentScanline === V_DRAW_LINES) {
+                dispstat |= 0x0001; 
+                if (this.currentScanline === V_DRAW_LINES) { 
                     this.renderScreen(); 
                 }
             }
             
-            // 4. Set H-Blank flag (Bit 1)
-            dispstat |= 0x0002; 
-            
-            // 5. VCOUNT Match Check 
+            // 3. VCOUNT Match Check 
             if (this.currentScanline === 0) {
                  dispstat |= 0x0004; 
             }
             
-            // 6. Update VCOUNT register (Current Scanline)
+            // Write VCOUNT and DISPSTAT registers (CRITICAL write for V-Blank loop)
             this.ioRegsView.setUint16(this.REG_VCOUNT, this.currentScanline, true);
             this.ioRegsView.setUint16(this.REG_DISPSTAT, dispstat, true);
         }
@@ -562,12 +525,11 @@ class GBAJS3_Core {
         if (!this.paused) {
             this.frameCounter++;
             
-            // Accurate GBA cycles per frame 
             const CYCLES_PER_FRAME = 279620; 
             const cyclesPerStep = 50; 
 
             for (let i = 0; i < CYCLES_PER_FRAME; i += cyclesPerStep) {
-                // Interleave CPU and PPU execution
+                
                 for(let j = 0; j < cyclesPerStep / 4; j++) { 
                     this.cpu.executeNextInstruction(); 
                 }
@@ -578,7 +540,7 @@ class GBAJS3_Core {
         this.animationFrameId = requestAnimationFrame(() => this.runGameLoop());
     }
 
-    // --- Helper to draw a single 8x8 tile (for Mode 0) ---
+    // Helper to draw a single 8x8 tile (Mode 0 function, kept for completeness)
     drawTile(ctx, tileNum, tileBase, mapBase, paletteBank, x, y, flipH, flipV) {
         
         const tileDataOffset = tileBase + tileNum * 32; 
@@ -604,7 +566,6 @@ class GBAJS3_Core {
                 const colorOffset = paletteBaseOffset + pixelIndex * 2;
                 const color16 = paletteView.getUint16(colorOffset % this.paletteRAM.byteLength, true);
 
-                // BGR-555 to RGB-888 conversion
                 let r5 = (color16 >> 10) & 0x1F; 
                 let g5 = (color16 >> 5) & 0x1F;
                 let b5 = color16 & 0x1F;
@@ -647,9 +608,7 @@ class GBAJS3_Core {
             frameData[i + 3] = 0xFF;
         }
 
-        // --- PPU LOGIC BRANCH ---
-        
-        // Mode 3 (Bitmap Mode) is used for the BIOS Logo and requires BG2 to be enabled.
+        // --- PPU LOGIC BRANCH (Mode 3 is required for BIOS Logo) ---
         if (displayMode === 3 && bg2Enabled) { 
             for (let y = 0; y < height; y++) {
                 for (let x = 0; x < width; x++) {
@@ -672,8 +631,6 @@ class GBAJS3_Core {
                 }
             }
         } 
-        // Mode 0 logic is intentionally skipped here for simplicity but would be needed for games.
-        // else if (displayMode === 0 && (dispcnt >> 8) & 0x1) { ... }
 
         this.ctx.putImageData(this.frameBuffer, 0, 0);
 
