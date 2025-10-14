@@ -170,6 +170,10 @@ class GBA_CPU {
     constructor(bus) {
         this.bus = bus;
         this.registers = new Uint32Array(16);
+        // SVC mode Stack Pointer (R13) is used immediately by the BIOS.
+        // We set R13 to a safe address near the top of IWRAM (0x03008000).
+        this.registers[13] = 0x03007F00; // <- CRITICAL STACK POINTER INIT
+
         this.CPSR = 0x00000010 | ARM_MODE; 
         
         this.registers[REG_PC] = 0x00000000; 
