@@ -1,4 +1,4 @@
-// GBAJS3-Core.js (Final Script - All fixes applied)
+// GBAJS3-Core.js (Final Script with Mode 0 Tile Renderer)
 
 // === CONSTANTS for ARM Mode and Flags ===
 const REG_PC = 15;
@@ -18,8 +18,11 @@ const CYCLES_PER_INSTRUCTION = 4; // 1 ARM instruction = 4 cycles
 const REG_DISPCNT  = 0x000; 
 const REG_DISPSTAT = 0x004; 
 const REG_VCOUNT   = 0x006; 
-const REG_WAITCNT  = 0x204; // Stubbed
-const REG_IME      = 0x208; // Stubbed
+const REG_BG0CNT   = 0x008; // BG Control Register 0 (0x4000008)
+
+// TILE MODE CONSTANTS
+const TILE_SIZE = 32; // Bytes per 8x8 tile in 4-bit mode (16 colors)
+const TILE_MAP_ENTRY_SIZE = 2; // Bytes per map entry
 
 // === MemoryBus (Handles memory reads/writes) ===
 class MemoryBus {
@@ -220,7 +223,6 @@ class GBA_CPU {
                     break;
                 }
                 default: 
-                    // Handle BEQ/BNE for V-Blank loop (BIOS stall)
                     if (instructionAddress === 0x94 && opcode === 0b0000) { 
                         if (this.CPSR & FLAG_Z) { 
                             this.registers[REG_PC] = 0x8C + 8;
@@ -249,7 +251,6 @@ class GBAJS3_Core {
         this.oam = new Uint8Array(0x400); 
         this.ioRegsView = new DataView(new ArrayBuffer(0x400)); 
 
-        // MemoryBus initialization (passing 'this' for synchronization)
         this.bus = new MemoryBus(
             this,
             this.ewram, this.iwram, this.vram, this.paletteRAM, this.oam, 
@@ -257,7 +258,7 @@ class GBAJS3_Core {
         );
         this.cpu = new GBA_CPU(this.bus);
         
-        // PPU/Loop state (Moved from class fields to fix Syntax Error)
+        // PPU/Loop state (Fixes Syntax Error)
         this.currentScanline = 0;
         this.cyclesToNextHBlank = H_CYCLES;
         this.paused = true; 
@@ -265,10 +266,10 @@ class GBAJS3_Core {
         this.currentVideoMode = 0; 
 
         // Initialize I/O registers
-        this.ioRegsView.setUint16(REG_DISPSTAT, 0, true);
-        this.ioRegsView.setUint16(REG_VCOUNT, 0, true);
-        this.ioRegsView.setUint16(REG_WAITCNT, 0, true); 
-        this.ioRegsView.setUint16(REG_IME, 0, true);     
+        this.ioRegsView.setUint16(0x204, 0, true); // REG_WAITCNT
+        this.ioRegsView.setUint16(0x208, 0, true); // REG_IME
+        this.ioRegsView.setUint16(0x004, 0, true); // REG_DISPSTAT
+        this.ioRegsView.setUint16(0x006, 0, true); // REG_VCOUNT
         
         // Display Setup
         this.screen = document.createElement('canvas');
@@ -293,7 +294,6 @@ class GBAJS3_Core {
         this.ctx.fillText('Core Initialized. Waiting for ROM.', 120, 80);
     }
     
-    // For manual video mode change (Force Mode 3 button)
     setVideoMode(mode) {
         const DISPCNT_ADDRESS = 0x04000000 + REG_DISPCNT;
         let currentValue = this.bus.read16(DISPCNT_ADDRESS);
@@ -306,7 +306,6 @@ class GBAJS3_Core {
         this.currentVideoMode = mode;
     }
 
-    // Called by MemoryBus when an IO register is written
     handleIOWrite(address, value) {
         const offset = address - 0x04000000;
         
@@ -318,6 +317,108 @@ class GBAJS3_Core {
         }
     }
     
+    // Helper function to read BG Control Register settings
+    readBgControl(bgIndex) {
+        const address = 0x04000000 + REG_BG0CNT + (bgIndex * 2);
+        const bgcnt = this.bus.read16(address);
+
+        return {
+            charBaseBlock: (bgcnt >> 2) & 0x3,
+            screenBaseBlock: (bgcnt >> 8) & 0x1F,
+            colorMode: (bgcnt >> 7) & 0x1 // 0=4bpp (16 colors), 1=8bpp (256 colors)
+        };
+    }
+    
+    // New function to render the most common tile mode (Mode 0)
+    drawMode0() {
+        const bgIndex = 0; 
+        const bgControl = this.readBgControl(bgIndex);
+
+        const vramView = new DataView(this.vram.buffer);
+        const prView = new DataView(this.paletteRAM.buffer);
+        const frameData = this.frameBuffer.data;
+        const is8bpp = bgControl.colorMode; 
+
+        // Calculate Base Addresses (GBA VRAM is divided into 4 Char Blocks and 32 Screen Blocks)
+        const tileBase = bgControl.charBaseBlock * 0x4000; // 16KB per block
+        const mapBase = bgControl.screenBaseBlock * 0x800;  // 2KB per block
+
+        // Screen is 30 tiles wide x 20 tiles high
+        for (let tileY = 0; tileY < 20; tileY++) {
+            for (let tileX = 0; tileX < 30; tileX++) {
+                
+                // 1. Read Tile Map Entry (Tile ID, Palette, Flip flags)
+                const mapOffset = mapBase + (tileY * 32 + tileX) * TILE_MAP_ENTRY_SIZE;
+                
+                const mapEntry = vramView.getUint16(mapOffset, true);
+                
+                const tileID = mapEntry & 0x3FF; // Bits 0-9
+                const paletteID = (mapEntry >> 12) & 0xF; // Bits 12-15 (for 4bpp only)
+                // const flipX = (mapEntry >> 10) & 0x1; // Not implemented
+                // const flipY = (mapEntry >> 11) & 0x1; // Not implemented
+
+                if (tileID === 0) continue; 
+                
+                // 2. Calculate Tile Data Address
+                const tileBytes = is8bpp ? 64 : TILE_SIZE; // 64 bytes for 8bpp, 32 bytes for 4bpp
+                const tileDataOffset = tileBase + tileID * tileBytes;
+                
+                // 3. Draw Pixels of the Tile (8x8 loop)
+                for (let py = 0; py < 8; py++) {
+                    for (let px = 0; px < 8; px++) {
+                        
+                        // a. Calculate pixel data source offset
+                        const bytesPerTileRow = tileBytes / 8;
+                        const byteOffset = tileDataOffset + (py * bytesPerTileRow) + Math.floor(px / (is8bpp ? 1 : 2));
+                        
+                        if (byteOffset >= this.vram.byteLength) continue;
+
+                        const tileByte = vramView.getUint8(byteOffset);
+                        let paletteIndex;
+
+                        if (is8bpp) {
+                            // 8bpp: index is the entire byte (0-255)
+                            paletteIndex = tileByte;
+                        } else {
+                            // 4bpp: index is a nibble (0-15)
+                            paletteIndex = (px % 2) === 0 ? (tileByte & 0xF) : (tileByte >> 4);
+                        }
+
+                        // b. Handle Transparent Pixel (Index 0 is transparent)
+                        if (paletteIndex === 0) continue; 
+
+                        // c. Read Color from Palette RAM (PRAM)
+                        // PRAM address: PRAM_Base + (Palette_Bank * 32) + (Palette_Index * 2)
+                        const palBankOffset = is8bpp ? 0 : (paletteID * 32);
+                        const palOffset = palBankOffset + (paletteIndex * 2);
+
+                        const color16 = prView.getUint16(palOffset, true);
+                        
+                        // d. Convert BGR-555 to RGB-888
+                        let b5 = color16 & 0x1F;
+                        let g5 = (color16 >> 5) & 0x1F;
+                        let r5 = (color16 >> 10) & 0x1F; 
+
+                        let r8 = (r5 << 3) | (r5 >> 2);
+                        let g8 = (g5 << 3) | (g5 >> 2);
+                        let b8 = (b5 << 3) | (b5 >> 2);
+
+                        // e. Calculate FrameBuffer Position
+                        const screenX = tileX * 8 + px;
+                        const screenY = tileY * 8 + py;
+                        const frameIndex = (screenY * 240 + screenX) * 4;
+
+                        // f. Draw to FrameBuffer
+                        frameData[frameIndex] = r8; 
+                        frameData[frameIndex + 1] = g8; 
+                        frameData[frameIndex + 2] = b8; 
+                        frameData[frameIndex + 3] = 0xFF; 
+                    }
+                }
+            }
+        }
+    }
+
     renderScreen() {
         const frameData = this.frameBuffer.data;
         const width = 240;
@@ -328,7 +429,7 @@ class GBAJS3_Core {
         // --- STEP 1: Determine Universal Background Color from PRAM index 0 ---
         let bgR = 0, bgG = 0, bgB = 0;
         
-        // Read Palette RAM Index 0 (Universal BG Color, used by most modes)
+        // Read Palette RAM Index 0 (Universal BG Color)
         const color16 = prView.getUint16(0, true); 
 
         // Convert PRAM BGR-555 to RGB-888
@@ -340,8 +441,8 @@ class GBAJS3_Core {
         bgG = (g5 << 3) | (g5 >> 2);
         bgB = (b5 << 3) | (b5 >> 2);
         
-        // If the mode is an unimplemented tile mode, force MAGENTA clue
-        if (this.currentVideoMode >= 0 && this.currentVideoMode <= 2) {
+        // If mode is Mode 1 or 2 (unimplemented tile modes), force MAGENTA clue
+        if (this.currentVideoMode === 1 || this.currentVideoMode === 2) {
              bgR = 255; 
              bgG = 0; 
              bgB = 255; 
@@ -352,10 +453,10 @@ class GBAJS3_Core {
              frameData[i] = bgR; 
              frameData[i + 1] = bgG; 
              frameData[i + 2] = bgB; 
-             frameData[i + 3] = 0xFF; // CRITICAL: Always Opaque
+             frameData[i + 3] = 0xFF; // Always Opaque
         }
 
-        // --- STEP 3: Handle Mode 3 Drawing (Pixel Overwrite) ---
+        // --- STEP 3: Handle Graphics Mode Drawing (Pixel Overwrite) ---
         if (this.currentVideoMode === 3) {
             // Mode 3: 16-bit color, 240x160 bitmap
             for (let y = 0; y < height; y++) {
@@ -367,8 +468,6 @@ class GBAJS3_Core {
 
                     const pixel_color16 = vramView.getUint16(vram_offset, true);
                     
-                    // Only draw if the pixel is NOT black (0x0000)
-                    // This allows the background color (from PRAM index 0) to show through.
                     if (pixel_color16 !== 0x0000) {
                         let p_b5 = pixel_color16 & 0x1F;
                         let p_g5 = (pixel_color16 >> 5) & 0x1F;
@@ -386,12 +485,16 @@ class GBAJS3_Core {
                 }
             }
         } 
-        
+        else if (this.currentVideoMode === 0) {
+            // CRITICAL: Call the new Mode 0 renderer
+            this.drawMode0();
+        }
+
         // --- STEP 4: Render to Canvas and Draw Debug Overlay ---
         this.ctx.putImageData(this.frameBuffer, 0, 0); 
 
         // Draw Debug Info (ALWAYS OVERLAYED)
-        const vcount = this.ioRegsView.getUint16(REG_VCOUNT, true);
+        const vcount = this.ioRegsView.getUint16(0x006, true);
         const pc = this.cpu.registers[REG_PC];
         this.ctx.fillStyle = '#FFFFFF';
         this.ctx.font = '10px monospace';
@@ -407,7 +510,7 @@ class GBAJS3_Core {
         while (this.cyclesToNextHBlank <= 0) {
             this.cyclesToNextHBlank += H_CYCLES;
 
-            let dispstat = this.ioRegsView.getUint16(REG_DISPSTAT, true);
+            let dispstat = this.ioRegsView.getUint16(0x004, true);
             dispstat &= ~0x0007; 
             
             if (this.currentScanline >= V_DRAW_LINES) {
@@ -426,8 +529,8 @@ class GBAJS3_Core {
             
             dispstat |= 0x0002; 
             
-            this.ioRegsView.setUint16(REG_VCOUNT, this.currentScanline, true);
-            this.ioRegsView.setUint16(REG_DISPSTAT, dispstat, true);
+            this.ioRegsView.setUint16(0x006, this.currentScanline, true);
+            this.ioRegsView.setUint16(0x004, dispstat, true);
         }
     }
 
