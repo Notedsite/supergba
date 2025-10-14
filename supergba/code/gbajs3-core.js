@@ -406,3 +406,9 @@ class GBAJS3_Core {
                 // 2. Update PPU logic based on the 4 cycles consumed
                 this.updatePPU(CYCLES_PER_INSTRUCTION);
                 cycles += CYCLES_PER_INSTRUCTION;
+            }
+        }
+        // Rerun on next screen draw
+        requestAnimationFrame(() => this.runGameLoop()); 
+    }
+}
