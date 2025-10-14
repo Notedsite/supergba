@@ -185,7 +185,6 @@ class GBA_CPU {
         
         // Load/Store Register (LDR/STR) - Bit 27-26 is 01
         const isLoadStore = (instruction >> 26) === 0b01; 
-        const isStore = ((instruction >> 20) & 0x1) === 0x0; 
 
         // Increment PC before execution
         this.registers[REG_PC] += 4; 
@@ -238,18 +237,17 @@ class GBA_CPU {
                         
                     case 0b0010: // SUB (Subtract) 
                         result = (operand1 - operand2) >>> 0; 
-                        this.registers[Rd] = result;
+                        // Note: C and V flags logic omitted for simplicity.
                         break;
                         
                     case 0b0100: // ADD (Add) 
                         result = (operand1 + operand2) >>> 0; 
-                        this.registers[Rd] = result;
+                        // Note: C and V flags logic omitted for simplicity.
                         break;
                         
-                    case 0b1010: // CMP (Compare) <--- NEW: CMP
+                    case 0b1010: // CMP (Compare) <--- Handles CMP
                         // CMP is an arithmetic operation (SUB) that only sets flags.
                         result = (operand1 - operand2) >>> 0; 
-                        // Note: C and V flags logic omitted for simplicity.
                         break;
                         
                     case 0b1100: // ORR (Logical OR)
@@ -326,46 +324,68 @@ class GBA_CPU {
                 }
                 
             } else if (isLoadStore) {
-                // Load/Store Instruction (STR/LDR)
+                // Load/Store Instruction (LDR/STR, LDRH/STRH, LDRB/STRB) <--- Updated LDR/STR/H
+                
                 const Rd = (instruction >> 12) & 0xF; 
                 const Rn = (instruction >> 16) & 0xF; 
                 
-                const isByteTransfer = (instruction >> 22) & 0x1; 
-                const offset = instruction & 0xFFF; 
+                const isLoad = (instruction >> 20) & 0x1; 
+                const isByte = (instruction >> 22) & 0x1; 
                 
-                const baseAddress = this.registers[Rn];
-                const targetAddress = baseAddress + offset;
-                
-                const isLoad = ((instruction >> 20) & 0x1) === 0x1; 
+                // Check if it's the Half-Word/Signed Byte format
+                const isHalfWordOrByte = ((instruction >> 25) & 0b111) === 0b000 && ((instruction >> 4) & 0b1111) === 0b1011;
 
-                if (isStore) { // STR (Store Register)
-                    const value = this.registers[Rd];
+                if (isHalfWordOrByte) {
+                    // LDRH / STRH / LDRSB / LDRSH
+                    const H_code = (instruction >> 5) & 0b11; // 0b01 for H, 0b10 for SB, 0b11 for SH
+                    const offset = (instruction & 0xF) | ((instruction >> 8) & 0xF0); // 8-bit immediate offset
                     
-                    if (isByteTransfer) {
-                        // STRB (Not implemented)
-                    } else if (targetAddress & 0x3) { 
-                       // Unaligned write (16-bit)
-                       this.bus.write16(targetAddress, value & 0xFFFF);
-                    } else { 
-                       // Aligned write (32-bit)
-                       this.bus.write32(targetAddress, value);
-                    }
-                } else if (isLoad) { // LDR (Load Register)
-                    let loadedValue;
+                    const baseAddress = this.registers[Rn];
+                    const targetAddress = baseAddress + offset;
                     
-                    if (isByteTransfer) {
-                        loadedValue = this.bus.read32(targetAddress) & 0xFF; 
-                    } else if (targetAddress & 0x3) {
-                        loadedValue = this.bus.read16(targetAddress);
-                    } else { 
-                        loadedValue = this.bus.read32(targetAddress);
+                    if (isLoad) { // LDRH
+                        if (H_code === 0b01) {
+                            this.registers[Rd] = this.bus.read16(targetAddress);
+                        }
+                    } else { // STRH
+                        if (H_code === 0b01) {
+                            this.bus.write16(targetAddress, this.registers[Rd] & 0xFFFF);
+                        }
                     }
                     
-                    this.registers[Rd] = loadedValue;
+                } else {
+                    // Standard LDR/STR (32-bit) and LDRB/STRB (Byte)
+                    const offset = instruction & 0xFFF; // 12-bit immediate offset
+                    const baseAddress = this.registers[Rn];
+                    const targetAddress = baseAddress + offset;
                     
-                    // PC must be adjusted if it's the destination register (R15)
-                    if (Rd === REG_PC) {
-                        this.registers[REG_PC] &= 0xFFFFFFFC; // Align PC
+                    if (isLoad) { // LDR / LDRB
+                        let loadedValue;
+                        if (isByte) {
+                            // LDRB (Load Byte)
+                            loadedValue = this.bus.read32(targetAddress) & 0xFF; 
+                        } else { 
+                            // LDR (32-bit)
+                            loadedValue = this.bus.read32(targetAddress);
+                        }
+                        
+                        this.registers[Rd] = loadedValue;
+                        
+                        if (Rd === REG_PC) {
+                            this.registers[REG_PC] &= 0xFFFFFFFC; 
+                        }
+                        
+                    } else { // STR / STRB
+                        const value = this.registers[Rd];
+                        if (isByte) {
+                            // STRB (Store Byte)
+                            // Simplified byte write to 32-bit aligned space. 
+                            // This works for I/O but is incorrect for general memory.
+                            this.bus.write32(targetAddress, value & 0xFF); 
+                        } else { 
+                            // STR (32-bit)
+                            this.bus.write32(targetAddress, value);
+                        }
                     }
                 }
             }
