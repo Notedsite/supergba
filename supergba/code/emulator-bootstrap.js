@@ -179,8 +179,6 @@ function loadRomDataIntoEmulator(romData, fileName) {
         return;
     }
 
-    window.gbaEmulatorInstance.setVideoMode(3); 
-    
     // --- Extract and log the game title ---
     const gameTitle = getGameTitle(romData);
     console.log(`[Emulator Core] Starting game: ${gameTitle}`); 
@@ -213,29 +211,22 @@ function loadRomDataIntoEmulator(romData, fileName) {
 
 // --- Main Execution Flow ---
 async function startBootstrap() {
-    console.log('[Bootstrap] Starting client-side bootstrap...');
-    
-    if (!checkCompatibility() || !createDefaultStorage()) return;
-
-    const container = document.getElementById(CONFIG.EMULATOR_ID);
-    let statusEl = document.getElementById(CONFIG.STATUS_ID);
-    
-    // FIX: Remove or correct this block if CONFIG.STATUS_ID is not in index.html.
-    // The original error was likely occurring here if the element was created 
-    // after the container, or if later code expected it.
-    if (!statusEl) {
-        // Create the status element if it doesn't exist (this is what was added
-        // in your bootstrap and must be kept for the status updates to work)
-        statusEl = document.createElement('div');
-        statusEl.id = CONFIG.STATUS_ID;
-        container.insertAdjacentElement('afterend', statusEl); 
-    }
-    // The window not showing up means the whole script is crashing before this point,
-    // possibly because the DOM isn't ready or one of the check functions is failing hard.
-    // The most likely cause is a simple uncaught error preventing subsequent scripts from running.
-
-    const biosLoaded = await loadHardcodedBios();
+    console.log('[Bootstrap] Starting client-side bootstrap...');
     
+    if (!checkCompatibility() || !createDefaultStorage()) return;
+
+    const container = document.getElementById(CONFIG.EMULATOR_ID);
+    let statusEl = document.getElementById(CONFIG.STATUS_ID);
+    
+    // Check if the status element exists, if not, create it after the container
+    if (!statusEl) {
+        statusEl = document.createElement('div');
+        statusEl.id = CONFIG.STATUS_ID;
+        container.insertAdjacentElement('afterend', statusEl);
+    }
+    
+    const biosLoaded = await loadHardcodedBios();
+
     if (!biosLoaded) {
         statusEl.className = 'error';
         statusEl.innerHTML = `ERROR: GBA BIOS failed to load from **${CONFIG.BIOS_FILE}**. Ensure the file is correctly committed and available on GitHub Pages.`;
@@ -244,8 +235,6 @@ async function startBootstrap() {
     
     statusEl.className = '';
     statusEl.innerHTML = '<h2>Emulator Ready</h2><p>BIOS loaded. Please use the file input to load the **ROM (.gba)**.</p>';
-    
-    // Note: The container.innerHTML clearance is now handled inside loadRomDataIntoEmulator
     
     console.log('[Bootstrap] Bootstrap process complete. Waiting for ROM...', 'success');
 }
