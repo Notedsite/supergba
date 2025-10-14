@@ -102,7 +102,7 @@ class MemoryBus {
             return;
         }
 
-        // 3. IO Register Write (0x04000000 - 0x040003FE)
+        // 3. IO Register Write (0x04000000 - 0x04000400)
         if (address >= 0x04000000 && address < 0x04000400) {
             const offset = address - 0x04000000;
             this.ioRegsView.setUint16(offset, value, true);
@@ -155,7 +155,7 @@ class MemoryBus {
             return;
         }
 
-        // 3. IO Register Write (0x04000000 - 0x040003FE)
+        // 3. IO Register Write (0x04000000 - 0x04000400)
         if (address >= 0x04000000 && address < 0x04000400) {
             const offset = address - 0x04000000;
             this.ioRegsView.setUint32(offset, value, true);
@@ -171,8 +171,13 @@ class GBA_CPU {
         this.bus = bus;
         this.registers = new Uint32Array(16);
         
-        // CRITICAL FIX: Initialize SVC Stack Pointer (R13) to a safe IWRAM address
-        this.registers[13] = 0x03007F00; 
+        // CRITICAL FIX: Initialize R13 for all key modes used by BIOS
+        // The BIOS relies on the R13 register to be a valid stack pointer.
+        this.registers[13] = 0x03007F00; // R13_USR/SYS (Index 13)
+        
+        // We do not manage banked registers yet, but we define SVC and IRQ stacks for completeness
+        this.R13_SVC = 0x03007F00;
+        this.R13_IRQ = 0x03007FC0;
         
         this.CPSR = 0x00000010 | ARM_MODE; 
         
@@ -390,7 +395,7 @@ class GBA_CPU {
                 const isLoad = (instruction >> 20) & 0x1; 
                 const isByte = (instruction >> 22) & 0x1; 
                 
-                // Half-Word/Signed Byte format check
+                // Half-Word/Signed Byte format check (Used for LDRH/STRH)
                 const isHalfWordOrByte = ((instruction >> 25) & 0b111) === 0b000 && ((instruction >> 4) & 0b1111) === 0b1011;
 
                 if (isHalfWordOrByte) {
@@ -592,7 +597,7 @@ class GBAJS3_Core {
         if (!this.paused) {
             this.frameCounter++;
             
-            // CRITICAL FIX: Use the accurate GBA cycles per frame (~16.78MHz / 60)
+            // Use the accurate GBA cycles per frame (~16.78MHz / 60)
             const CYCLES_PER_FRAME = 279620; 
             const cyclesPerStep = 50; 
 
@@ -665,8 +670,10 @@ class GBAJS3_Core {
         const height = 160;
         
         const dispcnt = this.ioRegsView.getUint16(this.REG_DISPCNT, true);
+        const dispstat = this.ioRegsView.getUint16(this.REG_DISPSTAT, true);
         const displayMode = dispcnt & 0x7; 
         const bg0Enabled = (dispcnt >> 8) & 0x1; 
+        const bg2Enabled = (dispcnt >> 10) & 0x1; // Critical for Mode 3
 
         const vramView = new DataView(this.vram.buffer);
         
@@ -680,7 +687,8 @@ class GBAJS3_Core {
 
         // --- PPU LOGIC BRANCH ---
         
-        if (displayMode === 3) {
+        // Mode 3 is used for the BIOS Logo, and requires BG2 to be enabled (set by the BIOS)
+        if (displayMode === 3 && bg2Enabled) { 
             // Mode 3: 240x160, 16-bit color bitmap (Used by BIOS logo)
             for (let y = 0; y < height; y++) {
                 for (let x = 0; x < width; x++) {
@@ -735,7 +743,7 @@ class GBAJS3_Core {
 
         this.ctx.putImageData(this.frameBuffer, 0, 0);
 
-        // Draw overlay (Keep status text for debugging)
+        // Draw overlay (Debug Information)
         let pressedKeys = [];
         for (const [key, bit] of Object.entries(this.KEY_MAP)) {
             if (!(this.keyInputRegister & bit)) { 
@@ -749,7 +757,8 @@ class GBAJS3_Core {
         this.ctx.fillText(`Frame: ${this.frameCounter}`, 5, 10);
         this.ctx.fillText(`PC: 0x${this.cpu.registers[REG_PC].toString(16).padStart(8, '0')}`, 5, 20);
         this.ctx.fillText(`VCOUNT: ${this.currentScanline}`, 5, 30);
-        this.ctx.fillText(`Mode: ${dispcnt & 0x7}`, 5, 40);
+        this.ctx.fillText(`DISPSTAT: 0x${dispstat.toString(16).padStart(4, '0')}`, 5, 40); // <-- New DISPSTAT in Hex
+        this.ctx.fillText(`Mode: ${displayMode} (BG2: ${bg2Enabled})`, 5, 50);
         this.ctx.fillText(`Input: ${pressedKeys.join(', ') || 'None'}`, 5, 155);
     }
     
