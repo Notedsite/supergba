@@ -174,7 +174,10 @@ class GBA_CPU {
         const isBranch = ((instruction >> 25) & 0b111) === 0b101;
         const isDataProcessing = (instruction >> 26) === 0b00; 
         
-        // Check for LDR/STR instruction (Load/Store Register)
+        // Block Data Transfer (STM/LDM) - Bit 27-25 is 100
+        const isBlockDataTransfer = ((instruction >> 25) & 0b111) === 0b100;
+        
+        // Load/Store Register (LDR/STR) - Bit 27-26 is 01
         const isLoadStore = (instruction >> 26) === 0b01; 
         const isStore = ((instruction >> 20) & 0x1) === 0x0; 
 
@@ -195,11 +198,11 @@ class GBA_CPU {
                 this.registers[REG_PC] = currentPC + offset; 
                 
             } else if (isDataProcessing) {
-                // Data Processing Instruction (MOV, AND, ORR, etc.)
+                // Data Processing Instruction (MOV, AND, ORR, ADD, SUB, etc.)
                 const Rd = (instruction >> 12) & 0xF; 
                 const isImmediate = instruction & 0x02000000;
                 
-                // Read Rn (first operand), defaults to R0 for simplicity if Rn is not needed
+                // Read Rn (first operand)
                 const RnIndex = (instruction >> 16) & 0xF;
                 let operand1 = this.registers[RnIndex]; 
                 
@@ -222,14 +225,17 @@ class GBA_CPU {
                 let result = 0;
 
                 switch (opcode) {
-                    case 0b0000: // AND
+                    case 0b0000: // AND (Logical AND)
                         result = operand1 & operand2;
                         this.registers[Rd] = result;
                         break;
                         
-                    case 0b0100: // ADD (Add) <--- NEW ADDITION
-                        // The '>>> 0' forces the result back to an unsigned 32-bit integer,
-                        // handling the ARM wrap-around behavior correctly.
+                    case 0b0010: // SUB (Subtract) <--- NEW: SUB
+                        result = (operand1 - operand2) >>> 0; 
+                        this.registers[Rd] = result;
+                        break;
+                        
+                    case 0b0100: // ADD (Add) <--- NEW: ADD
                         result = (operand1 + operand2) >>> 0; 
                         this.registers[Rd] = result;
                         break;
@@ -245,40 +251,86 @@ class GBA_CPU {
                         break;
                         
                     default:
-                        // Unhandled opcode. Halt execution to prevent crashing.
-                        // console.log(`[CPU] Unhandled opcode: 0x${opcode.toString(16)}. Halting.`);
+                        console.log(`[CPU] Unhandled Data Processing opcode: 0x${opcode.toString(16)}. Halting.`);
                         return;
                 }
                 
                 // If S-bit is set, update flags
                 if (instruction & 0x00100000) { 
                     this.setZNFlags(result);
+                    // (C and V flags are omitted for simplicity, but needed for full emulation)
                 }
 
+            } else if (isBlockDataTransfer) {
+                // Block Data Transfer (STM/LDM) <--- NEW: STM
+                
+                const Rn = (instruction >> 16) & 0xF; 
+                const registerList = instruction & 0xFFFF; // Bits 0-15
+                const baseAddress = this.registers[Rn];
+                
+                const P_bit = (instruction >> 24) & 0x1; // Pre/Post
+                const U_bit = (instruction >> 23) & 0x1; // Up/Down
+                const isStore = ((instruction >> 20) & 0x1) === 0x0; 
+                const W_bit = (instruction >> 21) & 0x1; // Write-back
+
+                if (isStore) { // STM (Store Multiple)
+                    
+                    let currentAddress = baseAddress;
+                    let numRegisters = 0;
+                    
+                    // Count registers to calculate final address for write-back
+                    for (let i = 0; i < 16; i++) {
+                        if ((registerList >> i) & 0x1) {
+                            numRegisters++;
+                        }
+                    }
+                    
+                    // Adjust starting address based on addressing mode (Simplified STMDB/STMFD)
+                    if (P_bit === 1 && U_bit === 0) { // Decrement Before (Stack: Full Descending)
+                        currentAddress = baseAddress - (numRegisters * 4);
+                    } 
+                    // Other modes are complex; sticking to basic stack push (STMDB)
+
+                    let bytesWritten = 0;
+                    for (let i = 0; i < 16; i++) {
+                        if ((registerList >> i) & 0x1) {
+                            let value = this.registers[i];
+                            
+                            // CRITICAL: R15 (PC) is stored as PC + 12 (Instruction Address + 8)
+                            if (i === REG_PC) {
+                                value = instructionAddress + 8;
+                            }
+
+                            // Write the value
+                            this.bus.write32(currentAddress + bytesWritten, value);
+                            bytesWritten += 4;
+                        }
+                    }
+
+                    // Write-back the new base address (SP = SP - (NumRegs * 4))
+                    if (W_bit) {
+                        this.registers[Rn] = currentAddress;
+                    }
+                }
+                
             } else if (isLoadStore) {
                 // Load/Store Instruction (STR/LDR)
                 const Rd = (instruction >> 12) & 0xF; 
                 const Rn = (instruction >> 16) & 0xF; 
                 
-                // Check if it's a byte transfer (LDRB/STRB) - bit 22
                 const isByteTransfer = (instruction >> 22) & 0x1; 
-
-                // Simplified Immediate Offset calculation (Offset/Immediate is bits 0-11)
                 const offset = instruction & 0xFFF; 
                 
-                // Address calculation (simplified: Base + Offset)
                 const baseAddress = this.registers[Rn];
                 const targetAddress = baseAddress + offset;
                 
-                // LDR/STR bit is bit 20 (1 = LDR, 0 = STR)
                 const isLoad = ((instruction >> 20) & 0x1) === 0x1; 
 
                 if (isStore) { // STR (Store Register)
                     const value = this.registers[Rd];
                     
-                    // Simplified write access
                     if (isByteTransfer) {
-                        // Not implemented yet
+                        // STRB (Not implemented)
                     } else if (targetAddress & 0x3) { 
                        // Unaligned write (16-bit)
                        this.bus.write16(targetAddress, value & 0xFFFF);
@@ -290,17 +342,13 @@ class GBA_CPU {
                     let loadedValue;
                     
                     if (isByteTransfer) {
-                        // LDRB (Load Byte) - Reads a full word and masks
                         loadedValue = this.bus.read32(targetAddress) & 0xFF; 
                     } else if (targetAddress & 0x3) {
-                        // Unaligned Load (16-bit) - Reads a halfword
                         loadedValue = this.bus.read16(targetAddress);
                     } else { 
-                        // Aligned Load (32-bit)
                         loadedValue = this.bus.read32(targetAddress);
                     }
                     
-                    // The loaded value is placed into Rd
                     this.registers[Rd] = loadedValue;
                     
                     // PC must be adjusted if it's the destination register (R15)
@@ -356,6 +404,7 @@ class GBAJS3_Core {
         this.screen.style.width = '240px';
         this.screen.style.height = '160px';
 
+        this.container.innerHTML = ''; // Clear "Loading core initialization..."
         this.container.appendChild(this.screen);
         this.ctx = this.screen.getContext('2d');
         this.frameBuffer = this.ctx.createImageData(240, 160);
@@ -401,7 +450,7 @@ class GBAJS3_Core {
     }
 
     runGameLoop() {
-        if (!this.paused && this.romLoaded) {
+        if (!this.paused) {
             this.frameCounter++;
             
             // Run a high number of cycles per frame to approach real speed (16.78 MHz)
@@ -498,6 +547,10 @@ class GBAJS3_Core {
                 for (let x = 0; x < width; x++) {
                     const i = (y * width + x) * 4;
                     const vram_offset = (y * width + x) * 2;
+                    
+                    // Boundary check
+                    if (vram_offset >= this.vram.byteLength) continue;
+
                     const color16 = vramView.getUint16(vram_offset, true);
 
                     let r5 = (color16 >> 10) & 0x1F; 
@@ -516,15 +569,13 @@ class GBAJS3_Core {
             
             const bg0cnt = this.ioRegsView.getUint16(this.REG_BG0CNT, true);
             
-            // Character Base (Tile Data)
             const tileBaseIndex = (bg0cnt >> 2) & 0x3;
             const tileBase = tileBaseIndex * 0x4000; 
             
-            // Screen Base (Tile Map)
             const mapBaseIndex = (bg0cnt >> 8) & 0x1F;
             const mapBaseOffset = mapBaseIndex * 0x800; 
 
-            const MAP_TILE_WIDTH = 32; // Assumes 256x256 map size
+            const MAP_TILE_WIDTH = 32; 
 
             for (let tileY = 0; tileY < 20; tileY++) {
                 for (let tileX = 0; tileX < 30; tileX++) {
@@ -584,7 +635,6 @@ class GBAJS3_Core {
             this.runGameLoop();
         }
 
-        // Immediately clear the placeholder when ROM is loaded
         this.ctx.fillStyle = '#000000';
         this.ctx.fillRect(0, 0, 240, 160);
 
