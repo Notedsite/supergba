@@ -8,16 +8,16 @@ const FLAG_Z = 0x40000000; // Zero flag (Bit 30)
 
 // === GBA Input Key Map ===
 const KEY_MAP = {
-    'z': 0x0001,         // A button
-    'x': 0x0002,         // B button
-    'Enter': 0x0004,     // Select
-    ' ': 0x0008,         // Start (Spacebar)
+    'z': 0x0001, 		 // A button
+    'x': 0x0002, 		 // B button
+    'Enter': 0x0004, 	 // Select
+    ' ': 0x0008, 		 // Start (Spacebar)
     'ArrowRight': 0x0010,// Right
     'ArrowLeft': 0x0020, // Left
-    'ArrowUp': 0x0040,   // Up
+    'ArrowUp': 0x0040, 	 // Up
     'ArrowDown': 0x0080, // Down
-    'a': 0x0100,         // R shoulder
-    's': 0x0200,         // L shoulder
+    'a': 0x0100, 		 // R shoulder
+    's': 0x0200, 		 // L shoulder
 };
 
 
@@ -227,6 +227,13 @@ class GBA_CPU {
                         this.registers[Rd] = result;
                         break;
                         
+                    case 0b0100: // ADD (Add) <--- NEW ADDITION
+                        // The '>>> 0' forces the result back to an unsigned 32-bit integer,
+                        // handling the ARM wrap-around behavior correctly.
+                        result = (operand1 + operand2) >>> 0; 
+                        this.registers[Rd] = result;
+                        break;
+                        
                     case 0b1100: // ORR (Logical OR)
                         result = operand1 | operand2;
                         this.registers[Rd] = result;
@@ -318,7 +325,7 @@ class GBAJS3_Core {
 
         // Memory Stubs
         this.ewram = new Uint8Array(0x40000); 
-        this.iwram = new Uint8Array(0x8000);  
+        this.iwram = new Uint8Array(0x8000); 	
         this.vram = new Uint8Array(0x18000); // 96KB
         this.paletteRAM = new Uint8Array(0x400); // 1KB (512 colors)
         this.oam = new Uint8Array(0x400); 
@@ -330,7 +337,7 @@ class GBAJS3_Core {
         
         // PPU/IO REGISTERS
         this.REG_DISPCNT = 0x000; // Address 0x04000000
-        this.REG_BG0CNT = 0x008;  // BG0 Control Register Address (0x04000008)
+        this.REG_BG0CNT = 0x008; 	// BG0 Control Register Address (0x04000008)
         
         this.ioRegsView.setUint16(this.REG_DISPCNT, 0x0000, true); 
         this.ioRegsView.setUint16(this.REG_BG0CNT, 0x0000, true); 
@@ -477,9 +484,9 @@ class GBAJS3_Core {
         
         // Clear frame data to black at the start of every frame
         for (let i = 0; i < frameData.length; i += 4) {
-            frameData[i] = 0;      
-            frameData[i + 1] = 0;  
-            frameData[i + 2] = 0;  
+            frameData[i] = 0; 	
+            frameData[i + 1] = 0; 
+            frameData[i + 2] = 0; 
             frameData[i + 3] = 0xFF;
         }
 
@@ -527,9 +534,9 @@ class GBAJS3_Core {
                     
                     const mapEntry = vramView.getUint16(mapWordOffset % this.vram.byteLength, true);
 
-                    const tileNum = mapEntry & 0x3FF;       
+                    const tileNum = mapEntry & 0x3FF; 	
                     const paletteBank = (mapEntry >> 12) & 0xF; 
-                    const flipH = (mapEntry >> 10) & 0x1;   
+                    const flipH = (mapEntry >> 10) & 0x1; 	
                     const flipV = (mapEntry >> 11) & 0x1;
 
                     this.drawTile(this.ctx, tileNum, tileBase, mapBaseOffset, paletteBank, tileX * 8, tileY * 8, flipH, flipV);
