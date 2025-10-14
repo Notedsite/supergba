@@ -1,4 +1,4 @@
-// GBAJS3-Core.js (Full Script with Alpha Channel Fixes)
+// GBAJS3-Core.js (Final Script - All fixes applied)
 
 // === CONSTANTS for ARM Mode and Flags ===
 const REG_PC = 15;
@@ -15,11 +15,11 @@ const CYCLES_PER_FRAME = H_CYCLES * V_TOTAL_LINES;
 const CYCLES_PER_INSTRUCTION = 4; // 1 ARM instruction = 4 cycles
 
 // IO Register Offsets 
-const REG_DISPCNT  = 0x000; // Display Control (0x4000000)
-const REG_DISPSTAT = 0x004; // Display Status (0x4000004) - V-Blank flag is Bit 0
-const REG_VCOUNT   = 0x006; // V-Count (Current Scanline) (0x4000006)
-const REG_WAITCNT  = 0x204; // Waitstate Control Register (0x4000204) <-- STUBBED
-const REG_IME      = 0x208; // Interrupt Master Enable (0x4000208) <-- STUBBED
+const REG_DISPCNT  = 0x000; 
+const REG_DISPSTAT = 0x004; 
+const REG_VCOUNT   = 0x006; 
+const REG_WAITCNT  = 0x204; // Stubbed
+const REG_IME      = 0x208; // Stubbed
 
 // === MemoryBus (Handles memory reads/writes) ===
 class MemoryBus {
@@ -117,7 +117,6 @@ class MemoryBus {
         this.write16(address + 2, (value >>> 16) & 0xFFFF);
     }
 }
-
 
 // === GBA_CPU (The ARM7TDMI Interpreter) ===
 class GBA_CPU {
@@ -221,7 +220,7 @@ class GBA_CPU {
                     break;
                 }
                 default: 
-                    // Handle BEQ/BNE for V-Blank loop
+                    // Handle BEQ/BNE for V-Blank loop (BIOS stall)
                     if (instructionAddress === 0x94 && opcode === 0b0000) { 
                         if (this.CPSR & FLAG_Z) { 
                             this.registers[REG_PC] = 0x8C + 8;
@@ -239,10 +238,10 @@ class GBA_CPU {
     }
 }
 
-
 // === GBAJS3_Core (PPU/IO Initialization and Drawing Logic) ===
 class GBAJS3_Core {
     constructor(containerElement, biosData) {
+        // Memory allocation
         this.ewram = new Uint8Array(0x40000); 
         this.iwram = new Uint8Array(0x8000);  
         this.vram = new Uint8Array(0x18000); 
@@ -250,6 +249,7 @@ class GBAJS3_Core {
         this.oam = new Uint8Array(0x400); 
         this.ioRegsView = new DataView(new ArrayBuffer(0x400)); 
 
+        // MemoryBus initialization (passing 'this' for synchronization)
         this.bus = new MemoryBus(
             this,
             this.ewram, this.iwram, this.vram, this.paletteRAM, this.oam, 
@@ -257,18 +257,20 @@ class GBAJS3_Core {
         );
         this.cpu = new GBA_CPU(this.bus);
         
+        // PPU/Loop state (Moved from class fields to fix Syntax Error)
         this.currentScanline = 0;
         this.cyclesToNextHBlank = H_CYCLES;
-        
         this.paused = true; 
         this.animationFrameId = null; 
         this.currentVideoMode = 0; 
 
+        // Initialize I/O registers
         this.ioRegsView.setUint16(REG_DISPSTAT, 0, true);
         this.ioRegsView.setUint16(REG_VCOUNT, 0, true);
         this.ioRegsView.setUint16(REG_WAITCNT, 0, true); 
         this.ioRegsView.setUint16(REG_IME, 0, true);     
         
+        // Display Setup
         this.screen = document.createElement('canvas');
         this.screen.width = 240; this.screen.height = 160;
         this.screen.style.width = '240px';
@@ -291,18 +293,20 @@ class GBAJS3_Core {
         this.ctx.fillText('Core Initialized. Waiting for ROM.', 120, 80);
     }
     
+    // For manual video mode change (Force Mode 3 button)
     setVideoMode(mode) {
         const DISPCNT_ADDRESS = 0x04000000 + REG_DISPCNT;
         let currentValue = this.bus.read16(DISPCNT_ADDRESS);
         currentValue &= ~0x0007; 
         currentValue |= (mode & 0x7);
         if (mode === 3) {
-            currentValue |= (1 << 10); 
+            currentValue |= (1 << 10); // Enable BG2
         }
         this.bus.write16(DISPCNT_ADDRESS, currentValue);
         this.currentVideoMode = mode;
     }
 
+    // Called by MemoryBus when an IO register is written
     handleIOWrite(address, value) {
         const offset = address - 0x04000000;
         
@@ -319,20 +323,39 @@ class GBAJS3_Core {
         const width = 240;
         const height = 160;
         const vramView = new DataView(this.vram.buffer);
+        const prView = new DataView(this.paletteRAM.buffer);
         
-        // --- STEP 1: GUARANTEE OPAQUE BACKGROUND ---
-        // Magenta for unimplemented modes (0, 1, 2). Black for implemented (3) or others.
-        let fillColor = (this.currentVideoMode >= 0 && this.currentVideoMode <= 2) 
-                      ? [255, 0, 255] // Magenta 
-                      : [0, 0, 0];   // Black
+        // --- STEP 1: Determine Universal Background Color from PRAM index 0 ---
+        let bgR = 0, bgG = 0, bgB = 0;
         
-        for (let i = 0; i < frameData.length; i += 4) {
-             frameData[i] = fillColor[0]; 
-             frameData[i + 1] = fillColor[1]; 
-             frameData[i + 2] = fillColor[2]; 
-             frameData[i + 3] = 0xFF; // CRITICAL FIX: Alpha channel MUST be 0xFF
+        // Read Palette RAM Index 0 (Universal BG Color, used by most modes)
+        const color16 = prView.getUint16(0, true); 
+
+        // Convert PRAM BGR-555 to RGB-888
+        let b5 = color16 & 0x1F;
+        let g5 = (color16 >> 5) & 0x1F;
+        let r5 = (color16 >> 10) & 0x1F; 
+
+        bgR = (r5 << 3) | (r5 >> 2);
+        bgG = (g5 << 3) | (g5 >> 2);
+        bgB = (b5 << 3) | (b5 >> 2);
+        
+        // If the mode is an unimplemented tile mode, force MAGENTA clue
+        if (this.currentVideoMode >= 0 && this.currentVideoMode <= 2) {
+             bgR = 255; 
+             bgG = 0; 
+             bgB = 255; 
         }
 
+        // --- STEP 2: Fill Framebuffer with the Background Color ---
+        for (let i = 0; i < frameData.length; i += 4) {
+             frameData[i] = bgR; 
+             frameData[i + 1] = bgG; 
+             frameData[i + 2] = bgB; 
+             frameData[i + 3] = 0xFF; // CRITICAL: Always Opaque
+        }
+
+        // --- STEP 3: Handle Mode 3 Drawing (Pixel Overwrite) ---
         if (this.currentVideoMode === 3) {
             // Mode 3: 16-bit color, 240x160 bitmap
             for (let y = 0; y < height; y++) {
@@ -342,25 +365,29 @@ class GBAJS3_Core {
 
                     if (vram_offset >= this.vram.byteLength) continue;
 
-                    const color16 = vramView.getUint16(vram_offset, true);
-
-                    let b5 = color16 & 0x1F;
-                    let g5 = (color16 >> 5) & 0x1F;
-                    let r5 = (color16 >> 10) & 0x1F; 
-
-                    let r8 = (r5 << 3) | (r5 >> 2);
-                    let g8 = (g5 << 3) | (g5 >> 2);
-                    let b8 = (b5 << 3) | (b5 >> 2);
+                    const pixel_color16 = vramView.getUint16(vram_offset, true);
                     
-                    frameData[i] = r8; 
-                    frameData[i + 1] = g8; 
-                    frameData[i + 2] = b8; 
-                    frameData[i + 3] = 0xFF; // CRITICAL FIX: Alpha channel MUST be 0xFF
+                    // Only draw if the pixel is NOT black (0x0000)
+                    // This allows the background color (from PRAM index 0) to show through.
+                    if (pixel_color16 !== 0x0000) {
+                        let p_b5 = pixel_color16 & 0x1F;
+                        let p_g5 = (pixel_color16 >> 5) & 0x1F;
+                        let p_r5 = (pixel_color16 >> 10) & 0x1F; 
+
+                        let p_r8 = (p_r5 << 3) | (p_r5 >> 2);
+                        let p_g8 = (p_g5 << 3) | (p_g5 >> 2);
+                        let p_b8 = (p_b5 << 3) | (p_b5 >> 2);
+                        
+                        frameData[i] = p_r8; 
+                        frameData[i + 1] = p_g8; 
+                        frameData[i + 2] = p_b8; 
+                        frameData[i + 3] = 0xFF; 
+                    }
                 }
             }
         } 
         
-        // --- STEP 2: DRAW FRAMEBUFFER AND DEBUG INFO ---
+        // --- STEP 4: Render to Canvas and Draw Debug Overlay ---
         this.ctx.putImageData(this.frameBuffer, 0, 0); 
 
         // Draw Debug Info (ALWAYS OVERLAYED)
@@ -404,40 +431,20 @@ class GBAJS3_Core {
         }
     }
 
-    drawTestLogo() {
-    // This is a minimal stub to put non-zero data into VRAM, simulating the BIOS logo
-    // It's a placeholder for where actual BIOS rendering would happen.
-    const VRAM_BASE = 0x06000000;
-    const PRAM_BASE = 0x05000000;
-
-    // 1. Set a background color (Palette entry 0) to a distinct color, e.g., Blue.
-    this.bus.write16(PRAM_BASE, 0x7C00); // 0b11111 00000 00000 (Max Red)
-
-    // 2. Draw a few non-black pixels in VRAM (Mode 3 is 2 bytes per pixel)
-    for (let i = 0; i < 100; i++) {
-        // Write the max green color to VRAM (0b00000 11111 00000)
-        this.bus.write16(VRAM_BASE + i * 2, 0x03E0); 
+    loadRom(romData) {
+        if (!romData || romData.byteLength === 0) throw new Error("Empty ROM data.");
+        
+        this.romData = new Uint8Array(romData); 
+        this.bus.romData = this.romData; 
+        
+        this.romLoaded = true;
+        this.paused = false;
+        
+        if (!this.animationFrameId) {
+            this.runGameLoop();
+        }
+        console.log(`[GBAJS3_Core] ROM loaded. Emulation starting/resuming.`);
     }
-    
-    // 3. Force the video mode to 3 for drawing
-    this.setVideoMode(3);
-}
-
-// Update the loadRom method
-loadRom(romData) {
-    // ... (existing checks) ...
-    
-    this.romData = new Uint8Array(romData); 
-    this.bus.romData = this.romData; 
-    
-    // Inject the test logo data BEFORE starting the loop
-    this.drawTestLogo(); // <--- NEW LINE
-
-    this.romLoaded = true;
-    this.paused = false;
-    
-    // ... (rest of the function) ...
-}
 
     runGameLoop() {
         this.animationFrameId = requestAnimationFrame(() => this.runGameLoop()); 
