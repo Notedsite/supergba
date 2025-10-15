@@ -1,15 +1,15 @@
-// GBAJS3-Core.js (Final Script with Robust Mode 0 and PPU Fixes)
+// GBAJS3-Core.js (Complete Core with DMA Stub)
 
 // Use 'strict mode' for better coding practices, inspired by Iodine
 "use strict";
 
-// === CONSTANTS for ARM Mode and Flags ===
+// === CONSTANTS for CPU and Flags ===
 const REG_PC = 15;
 const ARM_MODE = 0b10000; // User mode
 const FLAG_N = 0x80000000; 
 const FLAG_Z = 0x40000000; 
 
-// PPU Timing Constants (1 line = 1232 cycles)
+// === PPU Timing Constants ===
 const H_CYCLES = 1232; 
 const H_BLANK_START_CYCLE = 1006; 
 const V_DRAW_LINES = 160;
@@ -17,16 +17,21 @@ const V_BLANK_LINES = 68;
 const V_TOTAL_LINES = V_DRAW_LINES + V_BLANK_LINES; 
 const CYCLES_PER_INSTRUCTION = 4; // 1 ARM instruction = 4 cycles
 
-// IO Register Offsets 
+// === IO Register Offsets ===
 const REG_DISPCNT  = 0x000; 
 const REG_DISPSTAT = 0x004; 
 const REG_VCOUNT   = 0x006; 
-const REG_BG0CNT   = 0x008; // BG Control Registers start here
+const REG_BG0CNT   = 0x008; 
+// DMA Control Register High Words (where the enable bit is written)
+const REG_DMA0CNT_H = 0x0B6; // DMA0CNT_H is at offset 0xB0 + 6
+const REG_DMA1CNT_H = 0x0C2; // DMA1CNT_H is at offset 0xBC + 6
+const REG_DMA2CNT_H = 0x0CE; // DMA2CNT_H is at offset 0xC8 + 6
+const REG_DMA3CNT_H = 0x0DA; // DMA3CNT_H is at offset 0xD4 + 6
 
-// TILE MODE CONSTANTS
-const TILE_SIZE_4BPP = 32; // Bytes per 8x8 tile in 4-bit mode
-const TILE_SIZE_8BPP = 64; // Bytes per 8x8 tile in 8-bit mode
-const TILE_MAP_ENTRY_SIZE = 2; // Bytes per map entry
+// === TILE MODE CONSTANTS ===
+const TILE_SIZE_4BPP = 32; 
+const TILE_SIZE_8BPP = 64; 
+const TILE_MAP_ENTRY_SIZE = 2; 
 
 // === MemoryBus (Handles memory reads/writes) ===
 class MemoryBus {
@@ -238,7 +243,7 @@ class GBA_CPU {
                     if (instructionAddress === 0x94 && opcode === 0b0000) { 
                         if (this.CPSR & FLAG_Z) { 
                             if (this.bus.core.currentScanline < 10) {
-                                console.log(`[BIOS TRACE] Entered V-Blank wait loop (PC 0x94). Waiting for graphics sync.`);
+                                // console.log(`[BIOS TRACE] Entered V-Blank wait loop (PC 0x94). Waiting for graphics sync.`);
                             }
                             this.registers[REG_PC] = 0x8C + 8;
                             branchOccurred = true;
@@ -262,9 +267,9 @@ class GBAJS3_Core {
         // Memory allocation
         this.ewram = new Uint8Array(0x40000); 
         this.iwram = new Uint8Array(0x8000);  
-        this.vram = new Uint8Array(0x18000); 
-        this.paletteRAM = new Uint8Array(0x400); 
-        this.oam = new Uint8Array(0x400); 
+        this.vram = new Uint8Array(0x18000); // 96KB
+        this.paletteRAM = new Uint8Array(0x400); // 1KB
+        this.oam = new Uint8Array(0x400); // 1KB
         this.ioRegsView = new DataView(new ArrayBuffer(0x400)); 
 
         this.bus = new MemoryBus(
@@ -311,21 +316,76 @@ class GBAJS3_Core {
         this.ctx.fillText('Core Initialized. Waiting for ROM.', 120, 80);
     }
     
-    // REMOVED setVideoMode to fix the 'Cannot read properties of null' error
+    // === DMA STUB IMPLEMENTATION ===
+    dmaTransfer(channelIndex) {
+        // Base address for DMA control registers: 0x40000B0, 0x40000BC, 0x40000C8, 0x40000D4
+        const REG_BASE = 0x40000B0 + (channelIndex * 12); 
+        
+        // The Bus must read the full 32-bit registers for source and dest
+        const srcAddr = this.bus.read32(REG_BASE - 8); 
+        const dstAddr = this.bus.read32(REG_BASE - 4);
+        const dmaCntH = this.bus.read16(REG_BASE + 4);
+        const dmaCntL = this.bus.read16(REG_BASE + 2); // Unused for basic stub
     
+        // Transfer Count is stored in the lower 16 bits of the 32-bit word after SRC/DST
+        // A count of 0 is interpreted as a count of 0x4000 (16384)
+        const transferCount = dmaCntL === 0 ? 0x4000 : (dmaCntL & 0xFFFF);
+        
+        // Bit 10 of Control High: 1=32bit (Word), 0=16bit (Halfword)
+        const transferSize = (dmaCntH & 0x400) ? 4 : 2; 
+    
+        if (transferCount === 0) return;
+    
+        // Simplified transfer: assume both source and destination increment for now
+        let currentSrc = srcAddr & ~0x3; // Align source to 4 bytes for safety
+        let currentDst = dstAddr & ~0x1; // Align destination to 2 bytes for safety
+        
+        for (let i = 0; i < transferCount; i++) {
+            if (transferSize === 4) {
+                const value = this.bus.read32(currentSrc);
+                this.bus.write32(currentDst, value);
+                currentSrc += 4;
+                currentDst += 4;
+            } else {
+                const value = this.bus.read16(currentSrc);
+                this.bus.write16(currentDst, value);
+                currentSrc += 2;
+                currentDst += 2;
+            }
+        }
+        
+        // Disable the DMA channel after completion by clearing enable bit 15
+        this.bus.write16(REG_BASE + 4, dmaCntH & 0x7FFF); 
+        
+        // console.log(`[DMA TRACE] CH${channelIndex} completed: Count=${transferCount}, Size=${transferSize}-bit. Destination: 0x${dstAddr.toString(16)}`);
+    }
+
+    // === IO WRITE HANDLER ===
     handleIOWrite(address, value) {
         const offset = address - 0x04000000;
         
+        // 1. DISPCNT (Graphics Mode)
         if (offset === REG_DISPCNT) {
             const newMode = value & 0x7;
-            this.currentVideoMode = (value & 0x80) ? -1 : newMode; 
-            
-            if (this.currentVideoMode !== newMode) {
-                 // console.log(`[IO TRACE] DISPCNT written. New Mode: ${this.currentVideoMode}`);
-            }
+            this.currentVideoMode = (value & 0x80) ? -1 : newMode; // -1 for forced blank
+            return;
         }
+
+        // 2. DMA Channel 0-3 Enable Check (Check for Bit 15 set in Control High Word)
+        // A write to REG_DMAxCNT_H with bit 15 set triggers the transfer.
+        else if (offset === REG_DMA0CNT_H) {
+            if (value & 0x8000) this.dmaTransfer(0);
+        } else if (offset === REG_DMA1CNT_H) {
+            if (value & 0x8000) this.dmaTransfer(1);
+        } else if (offset === REG_DMA2CNT_H) {
+            if (value & 0x8000) this.dmaTransfer(2);
+        } else if (offset === REG_DMA3CNT_H) {
+            if (value & 0x8000) this.dmaTransfer(3); 
+        }
+        // NOTE: The write to the IO register itself is handled by the MemoryBus before this function is called.
     }
     
+    // === BG Control Reading ===
     readBgControl(bgIndex) {
         const address = 0x04000000 + REG_BG0CNT + (bgIndex * 2);
         const bgcnt = this.bus.read16(address);
@@ -338,6 +398,7 @@ class GBAJS3_Core {
         };
     }
     
+    // === MODE 0 DRAWING ===
     drawMode0(bgIndex) {
         const bgControl = this.readBgControl(bgIndex);
 
@@ -356,7 +417,7 @@ class GBAJS3_Core {
         for (let tileY = 0; tileY < 20; tileY++) {
             for (let tileX = 0; tileX < 30; tileX++) {
                 
-                // Calculate map entry offset
+                // Read 16-bit Map Entry
                 const mapOffset = mapBase + ((tileY * mapWidthTiles) + tileX) * TILE_MAP_ENTRY_SIZE;
                 const mapEntry = vramView.getUint16(mapOffset, true);
                 
@@ -391,7 +452,7 @@ class GBAJS3_Core {
                         if (is8bpp) {
                             paletteIndex = tileByte;
                         } else {
-                            // 4bpp: 2 pixels per byte, use localPx for position within the byte
+                            // 4bpp: 2 pixels per byte
                             paletteIndex = (localPx % 2) === 0 ? (tileByte & 0xF) : (tileByte >> 4);
                         }
 
@@ -399,7 +460,7 @@ class GBAJS3_Core {
                         if (paletteIndex === 0) continue; 
 
                         // Calculate PRAM offset (BG PRAM is 0x000-0x1FF)
-                        const palBankOffset = is8bpp ? 0 : (paletteID * 32); // 32 bytes per 4bpp bank (16 colors)
+                        const palBankOffset = is8bpp ? 0 : (paletteID * 32); 
                         const palOffset = palBankOffset + (paletteIndex * 2);
 
                         if (palOffset >= 0x200) continue; 
@@ -432,6 +493,7 @@ class GBAJS3_Core {
         }
     }
 
+    // === V-BLANK SCREEN RENDERER ===
     renderScreen() {
         const frameData = this.frameBuffer.data;
         const width = 240;
@@ -439,19 +501,17 @@ class GBAJS3_Core {
         const vramView = new DataView(this.vram.buffer);
         const prView = new DataView(this.paletteRAM.buffer);
         
-        // --- STEP 1: Determine Universal Background Color ---
-        let bgR = 0, bgG = 0, bgB = 0;
+        // 1. Determine Universal Background Color (Palette Index 0)
         const color16 = prView.getUint16(0, true); 
-
         let b5 = color16 & 0x1F;
         let g5 = (color16 >> 5) & 0x1F;
         let r5 = (color16 >> 10) & 0x1F; 
 
-        bgR = (r5 << 3) | (r5 >> 2);
-        bgG = (g5 << 3) | (g5 >> 2);
-        bgB = (b5 << 3) | (b5 >> 2);
+        let bgR = (r5 << 3) | (r5 >> 2);
+        let bgG = (g5 << 3) | (g5 >> 2);
+        let bgB = (b5 << 3) | (b5 >> 2);
         
-        // --- STEP 2: Fill Framebuffer with the Background Color ---
+        // 2. Fill Framebuffer with the Background Color
         for (let i = 0; i < frameData.length; i += 4) {
              frameData[i] = bgR; 
              frameData[i + 1] = bgG; 
@@ -461,14 +521,13 @@ class GBAJS3_Core {
 
         const dispcnt = this.bus.read16(0x04000000 + REG_DISPCNT);
 
-        // --- STEP 3: Handle Graphics Mode Drawing ---
+        // 3. Handle Graphics Mode Drawing
         if (this.currentVideoMode === 3) {
-            // Mode 3: Bitmap Mode (BIOS logo)
+            // Mode 3: 16-bit Bitmap
             for (let y = 0; y < height; y++) {
                 for (let x = 0; x < width; x++) {
                     const i = (y * width + x) * 4; 
                     const vram_offset = (y * width + x) * 2; 
-
                     if (vram_offset >= this.vram.byteLength) continue;
 
                     const pixel_color16 = vramView.getUint16(vram_offset, true);
@@ -491,7 +550,7 @@ class GBAJS3_Core {
             }
         } 
         else if (this.currentVideoMode === 0) {
-            // Mode 0: Tiled background rendering - Draw from lowest priority (BG3) to highest (BG0)
+            // Mode 0: Tiled - Draw from lowest priority (BG3) to highest (BG0)
             for (let bgIndex = 3; bgIndex >= 0; bgIndex--) {
                 const bgEnableBit = 1 << (8 + bgIndex); // BG0-3 enable bits are 8-11
                 
@@ -500,8 +559,8 @@ class GBAJS3_Core {
                 }
             }
         }
-        else if (this.currentVideoMode === 1 || this.currentVideoMode === 2 || this.currentVideoMode === 4 || this.currentVideoMode === 5) {
-             // Unimplemented tiled/bitmap modes - Draw a magenta placeholder over the black screen
+        else if (this.currentVideoMode !== -1) {
+             // Unimplemented modes 1, 2, 4, 5
              for (let i = 0; i < frameData.length; i += 4) {
                  frameData[i] = 255; 
                  frameData[i + 1] = 0; 
@@ -511,7 +570,7 @@ class GBAJS3_Core {
         }
 
 
-        // --- STEP 4: Render to Canvas and Draw Debug Overlay ---
+        // 4. Render to Canvas and Draw Debug Overlay
         this.ctx.putImageData(this.frameBuffer, 0, 0); 
 
         // Draw Debug Info 
@@ -525,7 +584,7 @@ class GBAJS3_Core {
         this.ctx.fillText(`MODE: ${this.currentVideoMode}`, 5, 30);
     }
     
-    // Updated PPU timing to better reflect GBA scanline events
+    // === PPU CYCLE TIMING ===
     updatePPU(cycles) {
         this.cyclesToNextHBlank -= cycles;
         
@@ -575,6 +634,7 @@ class GBAJS3_Core {
         }
     }
 
+    // === GAME LOOP CONTROL ===
     loadRom(romData) {
         if (!romData || romData.byteLength === 0) throw new Error("Empty ROM data.");
         
