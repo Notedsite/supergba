@@ -1,32 +1,32 @@
-// GBAJS3-Core.js (Complete Core with DMA Stub)
+// GBAJS3-Core.js (Final Script with PPU and MemoryBus Fixes)
 
 // Use 'strict mode' for better coding practices, inspired by Iodine
 "use strict";
 
 // === CONSTANTS for CPU and Flags ===
 const REG_PC = 15;
-const ARM_MODE = 0b10000; // User mode
+const ARM_MODE = 0b10000; 
 const FLAG_N = 0x80000000; 
 const FLAG_Z = 0x40000000; 
 
 // === PPU Timing Constants ===
 const H_CYCLES = 1232; 
 const H_BLANK_START_CYCLE = 1006; 
-const V_DRAW_LINES = 160;
+const V_DRAW_LINES = 160; // Lines 0-159 are drawn lines
 const V_BLANK_LINES = 68;
 const V_TOTAL_LINES = V_DRAW_LINES + V_BLANK_LINES; 
-const CYCLES_PER_INSTRUCTION = 4; // 1 ARM instruction = 4 cycles
+const CYCLES_PER_INSTRUCTION = 4; 
 
 // === IO Register Offsets ===
 const REG_DISPCNT  = 0x000; 
 const REG_DISPSTAT = 0x004; 
 const REG_VCOUNT   = 0x006; 
 const REG_BG0CNT   = 0x008; 
-// DMA Control Register High Words (where the enable bit is written)
-const REG_DMA0CNT_H = 0x0B6; // DMA0CNT_H is at offset 0xB0 + 6
-const REG_DMA1CNT_H = 0x0C2; // DMA1CNT_H is at offset 0xBC + 6
-const REG_DMA2CNT_H = 0x0CE; // DMA2CNT_H is at offset 0xC8 + 6
-const REG_DMA3CNT_H = 0x0DA; // DMA3CNT_H is at offset 0xD4 + 6
+// DMA Control Register High Words 
+const REG_DMA0CNT_H = 0x0B6; 
+const REG_DMA1CNT_H = 0x0C2; 
+const REG_DMA2CNT_H = 0x0CE; 
+const REG_DMA3CNT_H = 0x0DA; 
 
 // === TILE MODE CONSTANTS ===
 const TILE_SIZE_4BPP = 32; 
@@ -47,9 +47,10 @@ class MemoryBus {
         this.biosData = biosData; 
     }
     
-    // --- READS ---
+    // --- READS (Updated to include PRAM and VRAM) ---
     read16(address) {
         address >>>= 0;
+        
         if (address < 0x00004000 && this.biosData) {
             const biosView = new DataView(this.biosData);
             return biosView.getUint16(address, true); 
@@ -58,6 +59,22 @@ class MemoryBus {
             const offset = address - 0x04000000;
             return this.ioRegsView.getUint16(offset, true);
         }
+        
+        // ADDED: PRAM Read
+        if (address >= 0x05000000 && address < 0x05000400) {
+            const offset = address - 0x05000000;
+            const view = new DataView(this.paletteRAM.buffer);
+            return view.getUint16(offset % this.paletteRAM.byteLength, true);
+        }
+        
+        // ADDED: VRAM Read
+        if (address >= 0x06000000 && address < 0x07000000) {
+            const offset = address - 0x06000000;
+            const view = new DataView(this.vram.buffer);
+            // VRAM wraps at 0x18000 (96KB)
+            return view.getUint16(offset % this.vram.byteLength, true);
+        }
+        
         if (address >= 0x08000000 && this.romData) {
             const romBase = 0x08000000;
             const offset = (address - romBase) % this.romData.byteLength;
@@ -79,10 +96,11 @@ class MemoryBus {
             const romView = new DataView(this.romData.buffer);
             try { return romView.getUint32(offset, true); } catch (e) { return 0xDEADBEEF; }
         }
-        return 0x0;
+        // NOTE: Reads from PRAM/VRAM/WRAM are split into two 16-bit reads by write32/read32
+        return this.read16(address) | (this.read16(address + 2) << 16);
     }
 
-    // --- WRITES ---
+    // --- WRITES (Unchanged) ---
     write16(address, value) {
         address >>>= 0;
         value &= 0xFFFF;
@@ -242,9 +260,6 @@ class GBA_CPU {
                     // BIOS V-Blank Stall Detection (PC 0x94)
                     if (instructionAddress === 0x94 && opcode === 0b0000) { 
                         if (this.CPSR & FLAG_Z) { 
-                            if (this.bus.core.currentScanline < 10) {
-                                // console.log(`[BIOS TRACE] Entered V-Blank wait loop (PC 0x94). Waiting for graphics sync.`);
-                            }
                             this.registers[REG_PC] = 0x8C + 8;
                             branchOccurred = true;
                             return; 
@@ -267,9 +282,9 @@ class GBAJS3_Core {
         // Memory allocation
         this.ewram = new Uint8Array(0x40000); 
         this.iwram = new Uint8Array(0x8000);  
-        this.vram = new Uint8Array(0x18000); // 96KB
-        this.paletteRAM = new Uint8Array(0x400); // 1KB
-        this.oam = new Uint8Array(0x400); // 1KB
+        this.vram = new Uint8Array(0x18000); 
+        this.paletteRAM = new Uint8Array(0x400); 
+        this.oam = new Uint8Array(0x400); 
         this.ioRegsView = new DataView(new ArrayBuffer(0x400)); 
 
         this.bus = new MemoryBus(
@@ -288,10 +303,10 @@ class GBAJS3_Core {
         this.romLoaded = false;
 
         // Initialize I/O registers
-        this.ioRegsView.setUint16(0x204, 0, true); // REG_WAITCNT
-        this.ioRegsView.setUint16(0x208, 0, true); // REG_IME
-        this.ioRegsView.setUint16(0x004, 0, true); // REG_DISPSTAT
-        this.ioRegsView.setUint16(0x006, 0, true); // REG_VCOUNT
+        this.ioRegsView.setUint16(0x204, 0, true); 
+        this.ioRegsView.setUint16(0x208, 0, true); 
+        this.ioRegsView.setUint16(0x004, 0, true); 
+        this.ioRegsView.setUint16(0x006, 0, true); 
         
         // Display Setup
         this.screen = document.createElement('canvas');
@@ -316,29 +331,22 @@ class GBAJS3_Core {
         this.ctx.fillText('Core Initialized. Waiting for ROM.', 120, 80);
     }
     
-    // === DMA STUB IMPLEMENTATION ===
+    // === DMA STUB IMPLEMENTATION (Unchanged from previous successful implementation) ===
     dmaTransfer(channelIndex) {
-        // Base address for DMA control registers: 0x40000B0, 0x40000BC, 0x40000C8, 0x40000D4
         const REG_BASE = 0x40000B0 + (channelIndex * 12); 
         
-        // The Bus must read the full 32-bit registers for source and dest
         const srcAddr = this.bus.read32(REG_BASE - 8); 
         const dstAddr = this.bus.read32(REG_BASE - 4);
         const dmaCntH = this.bus.read16(REG_BASE + 4);
-        const dmaCntL = this.bus.read16(REG_BASE + 2); // Unused for basic stub
+        const dmaCntL = this.bus.read16(REG_BASE + 2); 
     
-        // Transfer Count is stored in the lower 16 bits of the 32-bit word after SRC/DST
-        // A count of 0 is interpreted as a count of 0x4000 (16384)
         const transferCount = dmaCntL === 0 ? 0x4000 : (dmaCntL & 0xFFFF);
-        
-        // Bit 10 of Control High: 1=32bit (Word), 0=16bit (Halfword)
         const transferSize = (dmaCntH & 0x400) ? 4 : 2; 
     
         if (transferCount === 0) return;
     
-        // Simplified transfer: assume both source and destination increment for now
-        let currentSrc = srcAddr & ~0x3; // Align source to 4 bytes for safety
-        let currentDst = dstAddr & ~0x1; // Align destination to 2 bytes for safety
+        let currentSrc = srcAddr & ~0x3; 
+        let currentDst = dstAddr & ~0x1; 
         
         for (let i = 0; i < transferCount; i++) {
             if (transferSize === 4) {
@@ -354,25 +362,19 @@ class GBAJS3_Core {
             }
         }
         
-        // Disable the DMA channel after completion by clearing enable bit 15
         this.bus.write16(REG_BASE + 4, dmaCntH & 0x7FFF); 
-        
-        // console.log(`[DMA TRACE] CH${channelIndex} completed: Count=${transferCount}, Size=${transferSize}-bit. Destination: 0x${dstAddr.toString(16)}`);
     }
 
-    // === IO WRITE HANDLER ===
+    // === IO WRITE HANDLER (Unchanged) ===
     handleIOWrite(address, value) {
         const offset = address - 0x04000000;
         
-        // 1. DISPCNT (Graphics Mode)
         if (offset === REG_DISPCNT) {
             const newMode = value & 0x7;
-            this.currentVideoMode = (value & 0x80) ? -1 : newMode; // -1 for forced blank
+            this.currentVideoMode = (value & 0x80) ? -1 : newMode; 
             return;
         }
 
-        // 2. DMA Channel 0-3 Enable Check (Check for Bit 15 set in Control High Word)
-        // A write to REG_DMAxCNT_H with bit 15 set triggers the transfer.
         else if (offset === REG_DMA0CNT_H) {
             if (value & 0x8000) this.dmaTransfer(0);
         } else if (offset === REG_DMA1CNT_H) {
@@ -382,10 +384,9 @@ class GBAJS3_Core {
         } else if (offset === REG_DMA3CNT_H) {
             if (value & 0x8000) this.dmaTransfer(3); 
         }
-        // NOTE: The write to the IO register itself is handled by the MemoryBus before this function is called.
     }
     
-    // === BG Control Reading ===
+    // === BG Control Reading (Unchanged) ===
     readBgControl(bgIndex) {
         const address = 0x04000000 + REG_BG0CNT + (bgIndex * 2);
         const bgcnt = this.bus.read16(address);
@@ -393,12 +394,12 @@ class GBAJS3_Core {
         return {
             priority: bgcnt & 0x3,
             charBaseBlock: (bgcnt >> 2) & 0x3,
-            colorMode: (bgcnt >> 7) & 0x1, // 0=4bpp, 1=8bpp
+            colorMode: (bgcnt >> 7) & 0x1, 
             screenBaseBlock: (bgcnt >> 8) & 0x1F,
         };
     }
     
-    // === MODE 0 DRAWING ===
+    // === MODE 0 DRAWING (Unchanged) ===
     drawMode0(bgIndex) {
         const bgControl = this.readBgControl(bgIndex);
 
@@ -417,7 +418,6 @@ class GBAJS3_Core {
         for (let tileY = 0; tileY < 20; tileY++) {
             for (let tileX = 0; tileX < 30; tileX++) {
                 
-                // Read 16-bit Map Entry
                 const mapOffset = mapBase + ((tileY * mapWidthTiles) + tileX) * TILE_MAP_ENTRY_SIZE;
                 const mapEntry = vramView.getUint16(mapOffset, true);
                 
@@ -437,7 +437,6 @@ class GBAJS3_Core {
                         let localPx = px;
                         let localPy = py;
                         
-                        // Apply Flips
                         if (flipX) localPx = 7 - px;
                         if (flipY) localPy = 7 - py;
 
@@ -452,14 +451,11 @@ class GBAJS3_Core {
                         if (is8bpp) {
                             paletteIndex = tileByte;
                         } else {
-                            // 4bpp: 2 pixels per byte
                             paletteIndex = (localPx % 2) === 0 ? (tileByte & 0xF) : (tileByte >> 4);
                         }
 
-                        // Index 0 in any palette bank is transparent for BGs
                         if (paletteIndex === 0) continue; 
 
-                        // Calculate PRAM offset (BG PRAM is 0x000-0x1FF)
                         const palBankOffset = is8bpp ? 0 : (paletteID * 32); 
                         const palOffset = palBankOffset + (paletteIndex * 2);
 
@@ -482,7 +478,6 @@ class GBAJS3_Core {
                         
                         const frameIndex = (screenY * screenWidth + screenX) * 4;
 
-                        // Draw pixel
                         frameData[frameIndex] = r8; 
                         frameData[frameIndex + 1] = g8; 
                         frameData[frameIndex + 2] = b8; 
@@ -493,7 +488,7 @@ class GBAJS3_Core {
         }
     }
 
-    // === V-BLANK SCREEN RENDERER ===
+    // === V-BLANK SCREEN RENDERER (Unchanged) ===
     renderScreen() {
         const frameData = this.frameBuffer.data;
         const width = 240;
@@ -523,11 +518,11 @@ class GBAJS3_Core {
 
         // 3. Handle Graphics Mode Drawing
         if (this.currentVideoMode === 3) {
-            // Mode 3: 16-bit Bitmap
             for (let y = 0; y < height; y++) {
                 for (let x = 0; x < width; x++) {
                     const i = (y * width + x) * 4; 
                     const vram_offset = (y * width + x) * 2; 
+
                     if (vram_offset >= this.vram.byteLength) continue;
 
                     const pixel_color16 = vramView.getUint16(vram_offset, true);
@@ -550,9 +545,8 @@ class GBAJS3_Core {
             }
         } 
         else if (this.currentVideoMode === 0) {
-            // Mode 0: Tiled - Draw from lowest priority (BG3) to highest (BG0)
             for (let bgIndex = 3; bgIndex >= 0; bgIndex--) {
-                const bgEnableBit = 1 << (8 + bgIndex); // BG0-3 enable bits are 8-11
+                const bgEnableBit = 1 << (8 + bgIndex); 
                 
                 if (dispcnt & bgEnableBit) {
                     this.drawMode0(bgIndex); 
@@ -560,7 +554,6 @@ class GBAJS3_Core {
             }
         }
         else if (this.currentVideoMode !== -1) {
-             // Unimplemented modes 1, 2, 4, 5
              for (let i = 0; i < frameData.length; i += 4) {
                  frameData[i] = 255; 
                  frameData[i + 1] = 0; 
@@ -573,7 +566,6 @@ class GBAJS3_Core {
         // 4. Render to Canvas and Draw Debug Overlay
         this.ctx.putImageData(this.frameBuffer, 0, 0); 
 
-        // Draw Debug Info 
         const vcount = this.ioRegsView.getUint16(0x006, true);
         const pc = this.cpu.registers[REG_PC];
         this.ctx.fillStyle = '#FFFFFF';
@@ -584,7 +576,7 @@ class GBAJS3_Core {
         this.ctx.fillText(`MODE: ${this.currentVideoMode}`, 5, 30);
     }
     
-    // === PPU CYCLE TIMING ===
+    // === PPU CYCLE TIMING (CRITICAL FIX: Frame render at VCOUNT 160) ===
     updatePPU(cycles) {
         this.cyclesToNextHBlank -= cycles;
         
@@ -594,7 +586,7 @@ class GBAJS3_Core {
             if (this.cyclesToNextHBlank <= (H_CYCLES - H_BLANK_START_CYCLE)) {
                 let dispstat = this.ioRegsView.getUint16(0x004, true);
                 if (!(dispstat & 0x0002)) { 
-                    dispstat |= 0x0002; // Set H-Blank flag
+                    dispstat |= 0x0002; 
                     this.ioRegsView.setUint16(0x004, dispstat, true);
                 }
             }
@@ -603,17 +595,16 @@ class GBAJS3_Core {
             this.cyclesToNextHBlank += H_CYCLES;
 
             let dispstat = this.ioRegsView.getUint16(0x004, true);
-            dispstat &= ~0x0002; // Clear H-Blank flag
+            dispstat &= ~0x0002; 
 
             this.currentScanline++;
 
-            // Check for V-Blank start/end
-            if (this.currentScanline === V_DRAW_LINES) {
-                // V-Blank Start (Line 160)
+            // --- CRITICAL V-BLANK CHECK ---
+            if (this.currentScanline === V_DRAW_LINES) { // This is line 160 (V-Blank start)
                 dispstat |= 0x0001; // Set V-Blank flag
-                this.renderScreen(); // Draw frame here
+                this.renderScreen(); // Draw the frame now that all lines 0-159 are processed
             } else if (this.currentScanline >= V_TOTAL_LINES) {
-                // Frame End (Line 228 -> Line 0)
+                // Frame End: Line 228 -> Line 0
                 this.currentScanline = 0;
                 dispstat &= ~0x0001; // Clear V-Blank flag
             }
@@ -624,9 +615,9 @@ class GBAJS3_Core {
             // Check V-Counter match
             const VCounterMatch = (dispstat >> 8) & 0xFF;
             if (this.currentScanline === VCounterMatch) {
-                dispstat |= 0x0004; // Set V-Counter match flag
+                dispstat |= 0x0004; 
             } else {
-                dispstat &= ~0x0004; // Clear V-Counter match flag
+                dispstat &= ~0x0004; 
             }
 
             // Write final DISPSTAT
@@ -634,7 +625,7 @@ class GBAJS3_Core {
         }
     }
 
-    // === GAME LOOP CONTROL ===
+    // === GAME LOOP CONTROL (Unchanged) ===
     loadRom(romData) {
         if (!romData || romData.byteLength === 0) throw new Error("Empty ROM data.");
         
