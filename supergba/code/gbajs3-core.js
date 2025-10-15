@@ -1,4 +1,4 @@
-// GBAJS3-Core.js (Final Script with Mode 0 Tile Rendering and BIOS Tracing)
+// GBAJS3-Core.js (Final Script with Robust Mode 0 and PPU Fixes)
 
 // Use 'strict mode' for better coding practices, inspired by Iodine
 "use strict";
@@ -11,11 +11,10 @@ const FLAG_Z = 0x40000000;
 
 // PPU Timing Constants (1 line = 1232 cycles)
 const H_CYCLES = 1232; 
-const H_BLANK_START_CYCLE = 1006; // HBlank starts after this cycle
+const H_BLANK_START_CYCLE = 1006; 
 const V_DRAW_LINES = 160;
 const V_BLANK_LINES = 68;
-const V_TOTAL_LINES = V_DRAW_LINES + V_BLANK_LINES; // 228 lines total
-const CYCLES_PER_FRAME = H_CYCLES * V_TOTAL_LINES; 
+const V_TOTAL_LINES = V_DRAW_LINES + V_BLANK_LINES; 
 const CYCLES_PER_INSTRUCTION = 4; // 1 ARM instruction = 4 cycles
 
 // IO Register Offsets 
@@ -93,7 +92,7 @@ class MemoryBus {
             return;
         }
         
-        // 2. PRAM Write
+        // 2. PRAM Write (0x05000000 - 0x050003FF)
         if (address >= 0x05000000 && address < 0x05000400) {
             const offset = address - 0x05000000;
             const view = new DataView(this.paletteRAM.buffer);
@@ -101,7 +100,7 @@ class MemoryBus {
             return;
         }
         
-        // 3. VRAM Write
+        // 3. VRAM Write (0x06000000 - 0x06017FFF)
         if (address >= 0x06000000 && address < 0x07000000) {
             const offset = address - 0x06000000;
             const view = new DataView(this.vram.buffer);
@@ -186,7 +185,6 @@ class GBA_CPU {
             }
             else if (isImmediateOffset) { 
                 const offset = instruction & 0xFFF;
-                // PC pre-fetching requires R15 to be PC+8 (currentPC)
                 const baseAddress = (Rn === REG_PC) ? (currentPC - 8) : this.registers[Rn];
                 const targetAddress = baseAddress + offset;
 
@@ -196,7 +194,6 @@ class GBA_CPU {
                     if (Rd === REG_PC) {
                         this.registers[REG_PC] = (data & ~0x3) + 4; 
                         branchOccurred = true;
-                        // Log the BIOS exit event
                         if (instructionAddress < 0x4000) {
                             console.log(`[BIOS TRACE] BIOS Exit: Jump to ROM/Entry point. New PC: 0x${data.toString(16).toUpperCase().padStart(8, '0')}`);
                         }
@@ -240,7 +237,6 @@ class GBA_CPU {
                     // BIOS V-Blank Stall Detection (PC 0x94)
                     if (instructionAddress === 0x94 && opcode === 0b0000) { 
                         if (this.CPSR & FLAG_Z) { 
-                            // Log the wait loop, but only early in the frame to avoid spam
                             if (this.bus.core.currentScanline < 10) {
                                 console.log(`[BIOS TRACE] Entered V-Blank wait loop (PC 0x94). Waiting for graphics sync.`);
                             }
@@ -256,7 +252,6 @@ class GBA_CPU {
         if (!branchOccurred) {
             this.registers[REG_PC] += 4; 
         }
-        // Signal that an instruction was executed
         return true; 
     }
 }
@@ -316,17 +311,17 @@ class GBAJS3_Core {
         this.ctx.fillText('Core Initialized. Waiting for ROM.', 120, 80);
     }
     
+    // REMOVED setVideoMode to fix the 'Cannot read properties of null' error
+    
     handleIOWrite(address, value) {
         const offset = address - 0x04000000;
         
         if (offset === REG_DISPCNT) {
             const newMode = value & 0x7;
+            this.currentVideoMode = (value & 0x80) ? -1 : newMode; 
+            
             if (this.currentVideoMode !== newMode) {
-                 console.log(`[IO TRACE] DISPCNT written. New Mode: ${newMode}`);
-                 this.currentVideoMode = newMode;
-            }
-            if (value & 0x80) {
-                this.currentVideoMode = -1; // Forced Blank
+                 // console.log(`[IO TRACE] DISPCNT written. New Mode: ${this.currentVideoMode}`);
             }
         }
     }
@@ -338,7 +333,7 @@ class GBAJS3_Core {
         return {
             priority: bgcnt & 0x3,
             charBaseBlock: (bgcnt >> 2) & 0x3,
-            colorMode: (bgcnt >> 7) & 0x1, // 0=4bpp (16 colors), 1=8bpp (256 colors)
+            colorMode: (bgcnt >> 7) & 0x1, // 0=4bpp, 1=8bpp
             screenBaseBlock: (bgcnt >> 8) & 0x1F,
         };
     }
@@ -354,13 +349,14 @@ class GBAJS3_Core {
         const tileBase = bgControl.charBaseBlock * 0x4000; 
         const mapBase = bgControl.screenBaseBlock * 0x800;  
 
-        const mapWidthTiles = 32; // Normal map size is 32x32 tiles (256x256 pixels)
+        const mapWidthTiles = 32; 
         const screenWidth = 240;
         const screenHeight = 160;
 
         for (let tileY = 0; tileY < 20; tileY++) {
             for (let tileX = 0; tileX < 30; tileX++) {
                 
+                // Calculate map entry offset
                 const mapOffset = mapBase + ((tileY * mapWidthTiles) + tileX) * TILE_MAP_ENTRY_SIZE;
                 const mapEntry = vramView.getUint16(mapOffset, true);
                 
@@ -395,7 +391,7 @@ class GBAJS3_Core {
                         if (is8bpp) {
                             paletteIndex = tileByte;
                         } else {
-                            // 4bpp: 2 pixels per byte
+                            // 4bpp: 2 pixels per byte, use localPx for position within the byte
                             paletteIndex = (localPx % 2) === 0 ? (tileByte & 0xF) : (tileByte >> 4);
                         }
 
@@ -406,7 +402,7 @@ class GBAJS3_Core {
                         const palBankOffset = is8bpp ? 0 : (paletteID * 32); // 32 bytes per 4bpp bank (16 colors)
                         const palOffset = palBankOffset + (paletteIndex * 2);
 
-                        if (palOffset >= 0x200) continue; // Safety check for BG PRAM boundary
+                        if (palOffset >= 0x200) continue; 
 
                         const color16 = prView.getUint16(palOffset, true);
                         
@@ -445,8 +441,7 @@ class GBAJS3_Core {
         
         // --- STEP 1: Determine Universal Background Color ---
         let bgR = 0, bgG = 0, bgB = 0;
-        
-        const color16 = prView.getUint16(0, true); // Index 0 of BG Palette is the backdrop color
+        const color16 = prView.getUint16(0, true); 
 
         let b5 = color16 & 0x1F;
         let g5 = (color16 >> 5) & 0x1F;
@@ -464,12 +459,11 @@ class GBAJS3_Core {
              frameData[i + 3] = 0xFF; 
         }
 
-        // Read DISPCNT for layer enables
         const dispcnt = this.bus.read16(0x04000000 + REG_DISPCNT);
 
-        // --- STEP 3: Handle Graphics Mode Drawing (Pixel Overwrite) ---
+        // --- STEP 3: Handle Graphics Mode Drawing ---
         if (this.currentVideoMode === 3) {
-            // Mode 3: 16-bit color, 240x160 bitmap (used by BIOS logo)
+            // Mode 3: Bitmap Mode (BIOS logo)
             for (let y = 0; y < height; y++) {
                 for (let x = 0; x < width; x++) {
                     const i = (y * width + x) * 4; 
@@ -506,6 +500,16 @@ class GBAJS3_Core {
                 }
             }
         }
+        else if (this.currentVideoMode === 1 || this.currentVideoMode === 2 || this.currentVideoMode === 4 || this.currentVideoMode === 5) {
+             // Unimplemented tiled/bitmap modes - Draw a magenta placeholder over the black screen
+             for (let i = 0; i < frameData.length; i += 4) {
+                 frameData[i] = 255; 
+                 frameData[i + 1] = 0; 
+                 frameData[i + 2] = 255; 
+                 frameData[i + 3] = 0xFF; 
+             }
+        }
+
 
         // --- STEP 4: Render to Canvas and Draw Debug Overlay ---
         this.ctx.putImageData(this.frameBuffer, 0, 0); 
@@ -529,12 +533,9 @@ class GBAJS3_Core {
             
             // 1. Check for HBlank start (Cycle 1006)
             if (this.cyclesToNextHBlank <= (H_CYCLES - H_BLANK_START_CYCLE)) {
-                // HBlank is starting (or already started)
                 let dispstat = this.ioRegsView.getUint16(0x004, true);
-                
-                if (!(dispstat & 0x0002)) { // If HBlank flag is not set
+                if (!(dispstat & 0x0002)) { 
                     dispstat |= 0x0002; // Set H-Blank flag
-                    // Future: Request H-Blank IRQ, HDMA
                     this.ioRegsView.setUint16(0x004, dispstat, true);
                 }
             }
@@ -545,7 +546,6 @@ class GBAJS3_Core {
             let dispstat = this.ioRegsView.getUint16(0x004, true);
             dispstat &= ~0x0002; // Clear H-Blank flag
 
-            // Increment Scanline
             this.currentScanline++;
 
             // Check for V-Blank start/end
@@ -553,9 +553,6 @@ class GBAJS3_Core {
                 // V-Blank Start (Line 160)
                 dispstat |= 0x0001; // Set V-Blank flag
                 this.renderScreen(); // Draw frame here
-                // Future: Request V-Blank IRQ, V-Blank DMA
-            } else if (this.currentScanline > V_DRAW_LINES && this.currentScanline < V_TOTAL_LINES) {
-                // In V-Blank region (Lines 161-227)
             } else if (this.currentScanline >= V_TOTAL_LINES) {
                 // Frame End (Line 228 -> Line 0)
                 this.currentScanline = 0;
@@ -569,7 +566,6 @@ class GBAJS3_Core {
             const VCounterMatch = (dispstat >> 8) & 0xFF;
             if (this.currentScanline === VCounterMatch) {
                 dispstat |= 0x0004; // Set V-Counter match flag
-                // Future: Request V-Counter IRQ
             } else {
                 dispstat &= ~0x0004; // Clear V-Counter match flag
             }
@@ -599,13 +595,10 @@ class GBAJS3_Core {
         
         if (!this.paused) {
             let cycles = 0; 
-            // The GBA runs at about 16.78 MHz, or 280,896 cycles per frame.
-            // 280896 cycles / 4 cycles/instruction = 70224 instructions per frame.
-            // We run a few steps per animation frame for smoothness.
-            const MAX_CPU_STEPS_PER_FRAME = 70224 / 2; // Run half a frame per screen refresh
+            const MAX_CPU_STEPS_PER_FRAME = 70224 / 2;
             let steps = 0;
             
-            while (cycles < CYCLES_PER_FRAME && steps < MAX_CPU_STEPS_PER_FRAME) {
+            while (cycles < H_CYCLES * V_TOTAL_LINES && steps < MAX_CPU_STEPS_PER_FRAME) {
                 
                 this.cpu.executeNextInstruction(); 
                 this.updatePPU(CYCLES_PER_INSTRUCTION);
